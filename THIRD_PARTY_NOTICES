@@ -1,0 +1,35 @@
+Third-party code in uber-mcp, with its licence.
+
+1. uber-cli
+   https://github.com/crafter-station/uber-cli, commit 5b7bbb076daaa734a987b901e4f97728a790a957
+   scripts/sync-operations.py is a Python port of its scripts/sync-operations.ts. The Products variables, the
+   option matching and the ride request's variables (src/uber_mcp/rides.py: products_variables, options, pick;
+   src/uber_mcp/booking.py: Booking.request) follow its src/uber/rides.ts.
+
+   uber-cli declares the MIT licence in its package.json and README and ships no LICENSE file or copyright line;
+   the licence it declares:
+
+MIT License
+
+Copyright (c) 2026 the uber-cli authors (crafter-station/uber-cli)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+The GraphQL documents in src/uber_mcp/operations.json are Uber's own, read from Uber's rider web apps by
+scripts/sync-operations.py; they are not covered by this repository's licence.

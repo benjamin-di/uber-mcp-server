@@ -1,0 +1,178 @@
+name: Release
+# A v1.2.3 tag: run the tests on the tagged commit, build the server image (Dockerfile, amd64 and arm64) and the
+# login browser image (Dockerfile.login, amd64), smoke-test both, push them to GHCR and publish a GitHub release.
+# Only the built-in token is used.
+#
+# Every build first publishes a permanent :sha-<12> candidate; a tag release promotes that exact digest to the
+# semver tag and :latest (scripts/promote-image.sh refuses to move an existing tag).
+#
+#   v1.2.3 tag        -> :sha-<12> + :1.2.3 + :latest, and a GitHub release
+#   workflow_dispatch -> :sha-<12> (never moves semver or latest)
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch: {}
+
+permissions: {}
+
+# GitHub can deliver one tag push twice: the runs of a ref queue one behind the other, and a
+# run whose tag already has a GitHub release (the last job) stops at `released`.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  released:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      done: ${{ steps.check.outputs.done }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          done=false
+          if [ "$GITHUB_REF_TYPE" = tag ] && gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            done=true
+            echo "$TAG is already released: nothing to do"
+          fi
+          echo "done=$done" >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: released
+    if: needs.released.outputs.done != 'true'
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  images:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    env:
+      # zstd layers: faster to decompress on the pulling host; Docker >= 23 pulls them.
+      ZSTD_PUSH: type=registry,compression=zstd,compression-level=3,force-compression=true,oci-mediatypes=true
+      REG: ghcr.io/${{ github.repository_owner }}
+      SERVER_IMAGE: uber-mcp-server
+      LOGIN_IMAGE: uber-mcp-login-browser
+      SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Compute version
+        id: v
+        run: |
+          if [ "${{ github.event_name }}" = push ] && [ "${{ github.ref_type }}" = tag ]; then
+            V="${GITHUB_REF_NAME#v}"
+            LATEST=true
+            grep -qx "version = \"$V\"" pyproject.toml || { echo "ERROR: tag $GITHUB_REF_NAME != pyproject version" >&2; exit 1; }
+          else
+            V="sha-$(git rev-parse --short=12 HEAD)"
+            LATEST=false
+          fi
+          BUILD_REF="sha-$(git rev-parse --short=12 HEAD)"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "build_ref=$BUILD_REF" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "Building candidate: $BUILD_REF; release ref: $V"
+      - name: Build + push server image
+        id: server
+        env:
+          BUILD_REF: ${{ steps.v.outputs.build_ref }}
+          VCS_REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          BUILD_DATE="$(git show -s --format=%cI "$VCS_REF")"
+          candidate="$REG/$SERVER_IMAGE:$BUILD_REF"
+          PLATFORMS=linux/amd64,linux/arm64 \
+            bash scripts/build-image.sh "$candidate" Dockerfile "$VCS_REF" "$BUILD_DATE" "$REG/$SERVER_IMAGE:buildcache"
+          digest="$(docker buildx imagetools inspect "$candidate" --format '{{json .Manifest}}' | jq -er .digest)"
+          image="$REG/$SERVER_IMAGE@$digest"
+          docker pull -q "$image" >/dev/null
+          # Smoke: the server builds with a sealed session and booking caps without a network, refuses HTTP
+          # without a bearer, and answers its own health check (the image's HEALTHCHECK) on a read-only root as uid 1000.
+          docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /state:uid=1000 \
+            -e UBER_SESSION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= -e UBER_MAX_FARE='USD 80' -e UBER_MAX_FARE_24H='USD 200' \
+            --entrypoint python "$image" -c 'from uber_mcp.server import UberService, create_server; from uber_mcp.config import Settings; s = Settings.from_env(); assert s.booking_enabled and create_server(UberService(s)).name == "uber"'
+          rc=0
+          timeout 120 docker run --rm --network none --read-only --tmpfs /tmp --tmpfs /state:uid=1000 "$image" || rc=$?
+          [ "$rc" = 1 ] || { echo "ERROR: expected a refusal without MCP_BEARER_TOKEN, got exit $rc" >&2; exit 1; }
+          name="smoke-$BUILD_REF"
+          docker run -d --name "$name" --network none --read-only --tmpfs /tmp --tmpfs /state:uid=1000 \
+            -e MCP_BEARER_TOKEN=smoke-token-0123456789abcdef "$image" >/dev/null
+          trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 30); do docker exec "$name" uber-mcp health && break; sleep 1; done
+          docker exec "$name" uber-mcp health || { docker logs "$name" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Build + push login browser image
+        id: login
+        env:
+          BUILD_REF: ${{ steps.v.outputs.build_ref }}
+          VCS_REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          BUILD_DATE="$(git show -s --format=%cI "$VCS_REF")"
+          candidate="$REG/$LOGIN_IMAGE:$BUILD_REF"
+          bash scripts/build-image.sh "$candidate" Dockerfile.login "$VCS_REF" "$BUILD_DATE" "$REG/$LOGIN_IMAGE:buildcache"
+          digest="$(docker buildx imagetools inspect "$candidate" --format '{{json .Manifest}}' | jq -er .digest)"
+          docker pull -q "$REG/$LOGIN_IMAGE@$digest" >/dev/null
+          image="$REG/$LOGIN_IMAGE@$digest"
+          # Smoke: the browser, display, remote-desktop server, viewer and CJK fonts are there; the service
+          # refuses to start without its bearer; it never runs as root.
+          docker run --rm --network none --entrypoint sh "$image" -c '
+            set -e
+            [ "$(id -u)" = 1000 ]
+            python -c "import uber_login.app, uber_login.logins, uber_login.window, patchright"
+            command -v Xvfb >/dev/null && command -v x11vnc >/dev/null
+            ls /ms-patchright | grep -q chromium
+            [ -f /opt/novnc/vnc.html ] && [ -f /opt/novnc/core/rfb.js ]
+            ls /usr/share/fonts/opentype/noto/ | grep -q CJK'
+          rc=0
+          timeout 60 docker run --rm --network none "$image" || rc=$?
+          [ "$rc" = 1 ] || { echo "ERROR: expected a refusal without UBER_LOGIN_TOKEN, got exit $rc" >&2; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Promote verified immutable refs
+        env:
+          V: ${{ steps.v.outputs.version }}
+          PUBLISH_LATEST: ${{ steps.v.outputs.latest }}
+          SERVER_DIGEST: ${{ steps.server.outputs.digest }}
+          LOGIN_DIGEST: ${{ steps.login.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for pair in "$SERVER_IMAGE:$SERVER_DIGEST" "$LOGIN_IMAGE:$LOGIN_DIGEST"; do
+            name="${pair%%:*}"; digest="${pair#*:}"
+            bash scripts/promote-image.sh "$REG/$name" "$digest" "$V"
+            if [ "$PUBLISH_LATEST" = true ]; then
+              docker buildx imagetools create --prefer-index=false --tag "$REG/$name:latest" "$REG/$name@$digest"
+              [ "$(docker buildx imagetools inspect "$REG/$name:latest" --format '{{json .Manifest}}' | jq -r .digest)" = "$digest" ]
+            fi
+          done
+
+  github-release:
+    needs: images
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes
