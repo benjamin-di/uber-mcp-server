@@ -308,21 +308,21 @@ The login service (`ghcr.io/benjamin-di/uber-mcp-login-browser`, `python -m uber
 
 Uber has no public rider API for this, so the server speaks GraphQL to the endpoints Uber's rider website uses, over
 plain HTTP, with the cookies of a browser session you signed in to and the GraphQL documents Uber's own web apps
-send. [docs/uber-web-api.md](docs/uber-web-api.md) records what is known about those endpoints;
-[docs/DESIGN.md](docs/DESIGN.md) explains the decisions. When Uber changes its web API, calls fail with
+send. [docs/uber-web-api.md](https://github.com/benjamin-di/uber-mcp-server/blob/main/docs/uber-web-api.md) records what is known about those endpoints;
+[docs/DESIGN.md](https://github.com/benjamin-di/uber-mcp-server/blob/main/docs/DESIGN.md) explains the decisions. When Uber changes its web API, calls fail with
 `schema_changed` until the server is updated.
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Tests never contact Uber.
+See [CONTRIBUTING.md](https://github.com/benjamin-di/uber-mcp-server/blob/main/CONTRIBUTING.md). Tests never contact Uber.
 
 ## Credits
 
 Built on what [crafter-station/uber-cli](https://github.com/crafter-station/uber-cli) worked out about Uber's rider
 web API: `scripts/sync-operations.py` is a port of its script that reads the GraphQL documents from Uber's own web
-bundles, and the price and ride request variables follow its code (MIT; [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES)).
+bundles, and the price and ride request variables follow its code (MIT; [THIRD_PARTY_NOTICES](https://github.com/benjamin-di/uber-mcp-server/blob/main/THIRD_PARTY_NOTICES)).
 Design ideas also came from [AriOliv/uber-mcp](https://github.com/AriOliv/uber-mcp) (MIT).
 
 ## License
 
-[MIT](LICENSE).
+[MIT](https://github.com/benjamin-di/uber-mcp-server/blob/main/LICENSE).
