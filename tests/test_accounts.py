@@ -288,4 +288,4 @@ def test_status_names_the_account(tmp_path, monkeypatch, capsys):
     capsys.readouterr()
     assert _run(tmp_path, monkeypatch, "status", "--account", "second") == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["account_id"] == "second" and out["state_dir"].endswith("accounts/second")
+    assert out["account_id"] == "second" and Path(out["state_dir"]).parts[-2:] == ("accounts", "second")

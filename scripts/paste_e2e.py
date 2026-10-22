@@ -43,7 +43,11 @@ from uber_mcp.server import HTTP_OPTIONS, Accounts, create_server
 # (x11vnc drops their keysyms), as for anyone typing them in the window.
 TEXT = "Hello, Uber 123 @#%&*()[]{}<>?/|~ pass:Word_-+=.\n"
 EXPECTED = TEXT.rstrip("\n") + "x"  # and a normal key afterwards
-FIELD_PAGE = "<!doctype html><title>stand-in</title><input id=f autofocus style='font-size:24px;width:90%'>"
+# The field covers the whole window, so the click that focuses the viewer also focuses it.
+FIELD_PAGE = (
+    "<!doctype html><title>stand-in</title>"
+    "<input id=f autofocus style='position:fixed;inset:0;width:100%;height:100%;font-size:24px'>"
+)
 BEARER, LOGIN_TOKEN, HEADER = "e2e-bearer-0123456789abcdef", "e2e-login-token-0123456789abcdef0123", "X-E2E-Account"
 
 
@@ -152,8 +156,14 @@ async def main() -> int:
         await frame.wait_for_function("document.documentElement.classList.contains('noVNC_connected')", timeout=60_000)
         print("live view connected through the link")
         canvas = await frame.wait_for_selector("#noVNC_container canvas")
-        await canvas.click()  # focuses the viewer (the click lands on the remote page, outside its field)
+        await canvas.click()  # focuses the viewer, and the remote field under the pointer
         await remote["page"].focus("#f")
+        await page.keyboard.press("y")  # plain typing reaches the field before the paste is tried
+        for _ in range(50):
+            if await remote["page"].input_value("#f") == "y":
+                break
+            await asyncio.sleep(0.1)
+        await page.keyboard.press("Backspace")
         await page.evaluate("text => navigator.clipboard.writeText(text)", TEXT)
         await page.keyboard.press("Control+V")
         await asyncio.sleep(0.3 + 0.03 * len(TEXT))
@@ -170,7 +180,7 @@ async def main() -> int:
         print("Ctrl+V typed the clipboard into the remote page (paste event; clipboard reading not granted)")
 
         await page.close(run_before_unload=True)  # pagehide sends the cancel
-        for _ in range(50):
+        for _ in range(300):  # closing ends Chromium, x11vnc and Xvfb, which can take a few seconds
             if not logins._logins:
                 break
             await asyncio.sleep(0.1)
