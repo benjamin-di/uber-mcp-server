@@ -26,7 +26,7 @@ set them ([Booking safety](#booking-safety)).
    QR code). It closes once you are signed in, and the session is saved for the server.
 
    ```sh
-   uvx --from "uber-mcp[login] @ git+https://github.com/benjamin-di/uber-mcp-server" uber-mcp login
+   uvx --from "uber-mcp[login]" uber-mcp login
    ```
 
 2. **Add the server to your client.** It runs over stdio, started by the client. As configured here it can look up
@@ -35,7 +35,7 @@ set them ([Booking safety](#booking-safety)).
    - Claude Code:
 
      ```sh
-     claude mcp add uber -- uvx --from git+https://github.com/benjamin-di/uber-mcp-server uber-mcp
+     claude mcp add uber -- uvx uber-mcp
      ```
 
    - Claude Desktop, Cursor and most other clients: add to the client's MCP configuration
@@ -45,7 +45,7 @@ set them ([Booking safety](#booking-safety)).
        "mcpServers": {
          "uber": {
            "command": "uvx",
-           "args": ["--from", "git+https://github.com/benjamin-di/uber-mcp-server", "uber-mcp"]
+           "args": ["uber-mcp"]
          }
        }
      }
@@ -60,7 +60,8 @@ set them ([Booking safety](#booking-safety)).
 4. **Ask.** "How much is an Uber from home to the airport right now?", "Book the cheapest one", "Where is my
    driver?", "What did my last three rides cost?".
 
-Pin a release with `git+https://github.com/benjamin-di/uber-mcp-server@vX.Y.Z`. The package is not published on PyPI.
+These commands run the latest release from PyPI ([`uber-mcp`](https://pypi.org/project/uber-mcp/)); write
+`uber-mcp==X.Y.Z` to stay on a release, or `--from git+https://github.com/benjamin-di/uber-mcp-server` for the latest code.
 
 ## Tools
 
@@ -159,7 +160,7 @@ Google's or Apple's, for their sign-in buttons). Once Uber shows its rides page,
 once (it signs in there through Uber's own single sign-on), reads your account on both with the same cookies, saves
 the session and closes. A running server picks up the new session with its next call.
 
-- No Chrome? Run `uvx --from "uber-mcp[login] @ git+https://github.com/benjamin-di/uber-mcp-server" patchright
+- No Chrome? Run `uvx --from "uber-mcp[login]" patchright
   install chromium`, then `uber-mcp login --browser chromium`.
 - Uber decides how long a session lasts. The server reads both of Uber's sites every 4 hours
   (`UBER_KEEPALIVE_SECONDS`), which lets Uber renew its short-lived cookies; `uber_status` shows when each sign-in
@@ -212,8 +213,8 @@ docker run -d --name uber-mcp -p 127.0.0.1:8000:8000 --read-only --tmpfs /tmp \
 
 Like this it cannot book; add `-e UBER_MAX_FARE=... -e UBER_MAX_FARE_24H=...` to let it
 ([Booking safety](#booking-safety)). Keep the bearer and the session key: a new key cannot read a session sealed with
-the old one (`session_invalid`, sign in again). Or run `MCP_BEARER_TOKEN=... uvx --from
-git+https://github.com/benjamin-di/uber-mcp-server uber-mcp serve --host 127.0.0.1 --port 8000`. The MCP endpoint is `/mcp`; `/health` is open for health checks (the image's
+the old one (`session_invalid`, sign in again). Or run `MCP_BEARER_TOKEN=... uvx uber-mcp
+serve --host 127.0.0.1 --port 8000`. The MCP endpoint is `/mcp`; `/health` is open for health checks (the image's
 `HEALTHCHECK` runs `uber-mcp health`). Put it behind your own HTTPS reverse proxy to reach it from outside, and give
 clients the bearer (`Authorization: Bearer <token>`).
 
