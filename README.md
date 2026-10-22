@@ -75,7 +75,8 @@ These commands run the latest release from PyPI ([`uber-mcp`](https://pypi.org/p
 | `uber_trips(limit 1..20, cursor)` | Upcoming (on the first page) and past trips, newest first: id, where to, when, fare and Uber's page for it. Pages back with `next_cursor`. |
 | `uber_trip(id)` | One trip: status, fare, product, driver, pickup, drop-off and stops, times, distance, duration, surge, scheduled, the rating you gave and Uber's route map image. |
 | `uber_account()` | The signed-in rider: first name, rating, sign-up country, completed trips, Uber One, payment methods (id, name, type, which one the app uses), Uber Cash, money owed, and the server's booking caps and 24-hour spend. |
-| `uber_status(check)` | Sign-in state (`signed_in`, `generation`, when proven, `cookie_expiry`), today's request budget, any pause, booking caps and spend, and `last_error`. `check=true` adds the cached canary (for monitoring). |
+| `uber_status(check)` | Sign-in state (`signed_in`, `generation`, when proven, `cookie_expiry`), today's request budget, any pause, booking caps and spend, `last_error`, and `sign_in_links` (whether `uber_connect` works here). `check=true` adds the cached canary (for monitoring). |
+| `uber_connect()` | A one-time link where the person signs in to their own Uber account, for the caller's account only ([Signing in with a link](#signing-in-with-a-link)). Not read-only (it makes the link), never destructive. |
 
 A pickup or drop-off can be a saved place's label (`Home`), a place id from `uber_places` (Google place ids such as
 `ChIJ...`, so ids from a Google Maps tool work too), `lat,lng`, or free text (Uber's top match, echoed back with
@@ -128,8 +129,9 @@ by `tests/test_safety.py` and `tests/test_booking.py`:
   in `src/uber_mcp/uber.py`; a redirect is never followed.
 - **Gentle.** One request at a time, about one a second, a daily request budget, and a pause of 5 minutes (30 when it
   repeats within two hours) whenever Uber pushes back.
-- **Your account only.** The server acts for the one signed-in rider. Every read of the account checks that it is
-  still the rider who signed in. Place names, driver names and trip descriptions are treated as data, not
+- **Your account only.** The server acts for the signed-in rider (with [several accounts](#accounts), for the
+  account the request is for, never another). Every read of the account checks that it is still the rider who signed
+  in. Place names, driver names and trip descriptions are treated as data, not
   instructions.
 
 ## Privacy
@@ -145,6 +147,7 @@ Everything stays on the computer that runs the server, in its state folder (`~/.
 | `state.json` | Today's request budget, any pause, unresolved errors, keep-alive and canary results. |
 | `booking.json` | Pending previews (for 10 minutes), the rides booked in the last 24 hours (price and trip id) and the freeze. |
 | `audit.jsonl` | Every booking and cancellation attempt ([above](#booking-safety)). |
+| `accounts/<id>/` | Each further account ([Accounts](#accounts)): its own `session.bin`, `state.json` (its errors, keep-alive and canary), `booking.json`, `audit.jsonl`, and `account.json` with its caps. |
 
 Nothing is sent anywhere except Uber. What a tool returns (places, prices, the driver's name, the plate, the PIN)
 goes to your assistant, like anything else you ask it. Logs (stderr) have one line per tool call with its name,
@@ -193,6 +196,37 @@ below (the service on the server's port 8766, loopback only) opened through an S
 (`ssh -L 8766:127.0.0.1:8766 <server>`); set `UBER_LOGIN_VIEW_URL` to your own HTTPS address if you publish the
 service through a reverse proxy instead. Its API needs the bearer; the view page and the remote-desktop
 stream need the per-sign-in token.
+
+### Signing in with a link
+
+With the login service and a public address (`UBER_PUBLIC_URL`, the address your reverse proxy serves the server at,
+e.g. `https://example.com/uber` when `/mcp` is `https://example.com/uber/mcp`), people sign in without the operator:
+they ask their assistant to connect Uber, the assistant calls `uber_connect` (the `not_signed_in` and
+`session_expired` errors point it there) and gives them the link, and they sign in on Uber's own page in their
+browser, phone or computer. The page names the account it connects and opens Uber's sign-in only when the person
+continues (so a chat app's link preview starts nothing).
+
+- **For the caller's account only.** The link is made for the account the request is for (the default account, or
+  the one the trusted header names); there is no way to ask for another account's link. A newer link replaces the
+  older one; at most 6 are made per account an hour.
+- **One sign-in, 20 minutes.** `<UBER_PUBLIC_URL>/connect/<id>` (192 random bits) works until a sign-in succeeds or
+  20 minutes pass, whichever is first; a reload or "try again" opens a new window, up to 4 times. Its pages are never
+  cached (`Cache-Control: no-store`) and send no referrer. Requests for ids that do not exist are counted per address
+  (from `X-Forwarded-For`, which the proxy must set): after 20 in ten minutes that address gets 429 instead of 404
+  (a real link keeps working).
+- **It only puts a session in.** Once the login service has proven the sign-in, the server stores it as that
+  account's session and proves it once more with Uber; the page shows only the first letter of the rider's name.
+  Nothing under `/connect` shows or returns a session. A sign-in as a different Uber rider than the account already
+  has (even an expired one) is refused, and so is a rider another account on this server holds; the operator can
+  still sign an account in with `uber-mcp admin login`.
+- **Your proxy decides who can reach it.** `/connect/...` (the page, its calls, noVNC's files and the live view's
+  WebSocket) is served without the bearer, because people open it in a browser; the link id is its credential. Route
+  only `<prefix>/connect/...` to the server without authentication, never anything else, and do not add your
+  bearer to it.
+- **Pasting works.** Ctrl+V (Cmd+V) in the window types the clipboard's text into Uber's page (a small add-on to
+  noVNC's viewer, `src/uber_mcp/paste.js`; up to 1000 characters, characters the window's keyboard has, which covers
+  ASCII). On a phone, noVNC's keyboard button opens the phone's keyboard, which pastes as usual.
+- Passkeys do not work in a remote window: sign in with a code or a password.
 
 Without the login service, sign in with `uber-mcp login` on a computer with a screen and copy its `session.json` into
 the server's state folder; the server adopts it on its next call. A server with `UBER_SESSION_KEY` reads only
@@ -249,6 +283,39 @@ volumes:
 The login image (amd64) runs as uid 1000, keeps nothing (each sign-in gets a throwaway browser profile that is
 deleted when it ends) and refuses to start without `UBER_LOGIN_TOKEN`. It can stay stopped between sign-ins.
 
+## Accounts
+
+One server can keep several Uber accounts apart, for example one per member of a household, behind an
+authenticating reverse proxy that knows who is calling. Each account has its own sealed session, booking caps,
+ledger, audit log and errors; Uber's pacing, the daily request budget and the pause after pushback are shared,
+because Uber sees one client.
+
+- The **default account** is the server's own state folder, with the caps from `UBER_MAX_FARE`/`UBER_MAX_FARE_24H`:
+  a single-account server needs nothing new, and its existing session and ledger keep working. Name it with
+  `UBER_DEFAULT_ACCOUNT` (default `default`) if the proxy sends that name for it.
+- **Further accounts** live in `accounts/<id>/` (ids are 1-32 lower-case letters, digits or dashes). A new account
+  has no caps, so it can look but not book until the operator sets them.
+- **Which account a request is for** comes from a header the proxy sets, named by `UBER_TRUSTED_ACCOUNT_HEADER`
+  (unset: every request is the default account's). It is read only on requests that carry the server's bearer, so
+  **only the proxy may hold `MCP_BEARER_TOKEN`**, and the proxy must remove any copy of that header a client sends.
+  A request without the header is the default account's; one whose header names an account that is not set up (or
+  names it twice, or malformed) gets `account_not_connected` and is never served from another account. Over stdio
+  there is no header: always the default account.
+- Confirm tokens belong to the account that previewed them: a token from one account is `confirm_invalid` on any
+  other.
+
+```sh
+docker exec uber-mcp uber-mcp admin account add alex          # read-only for now
+docker exec -it uber-mcp uber-mcp admin login --account alex  # or the person asks their assistant (uber_connect)
+docker exec uber-mcp uber-mcp admin account caps alex --max-fare "USD 40" --max-fare-24h "USD 100"
+docker exec uber-mcp uber-mcp admin account list              # signed in or not, and the caps
+docker exec uber-mcp uber-mcp admin account remove alex --yes # deletes its session, ledger and audit log
+```
+
+Caps (and a removal) apply on the server's next call; no restart. `status`, `admin audit`, `admin freeze` and
+`admin unfreeze` take `--account ID` too; `admin freeze` without it freezes every account. `uber_status` and
+`uber_account` name the caller's account in `account_id`.
+
 ## Configuration
 
 The server (`uber-mcp`):
@@ -265,6 +332,9 @@ The server (`uber-mcp`):
 | `UBER_LOGIN_URL` | unset | the login service on a private network, a name and port such as `http://uber-mcp-login:8080` (for `uber-mcp admin login`) |
 | `UBER_LOGIN_TOKEN` | unset | the login service's bearer, 32 or more characters; required with `UBER_LOGIN_URL` |
 | `UBER_LOGIN_VIEW_URL` | `http://localhost:8766` | where the person opens the login service's view page ([above](#on-a-server-the-login-service)) |
+| `UBER_PUBLIC_URL` | unset | the HTTPS address people reach this server at (the parent of `/mcp`); with the login service it turns on sign-in links ([Signing in with a link](#signing-in-with-a-link)) |
+| `UBER_TRUSTED_ACCOUNT_HEADER` | unset | the header your authenticating proxy sets to name the caller's account ([Accounts](#accounts)); only for a bearer no one but the proxy holds |
+| `UBER_DEFAULT_ACCOUNT` | `default` | the id of the account kept directly in the state folder |
 | `LOG_LEVEL` | INFO | |
 
 The login service (`ghcr.io/benjamin-di/uber-mcp-login-browser`, `python -m uber_login`):
@@ -283,8 +353,8 @@ The login service (`ghcr.io/benjamin-di/uber-mcp-login-browser`, `python -m uber
 | Code | What to do |
 |---|---|
 | `invalid_argument` | The assistant passed something malformed; the text says what. |
-| `not_signed_in` | Run `uber-mcp login` (or `uber-mcp admin login` on a server). |
-| `session_expired` | Uber ended the sign-in: sign in again. `uber_status` shows `signed_in` true once it worked. |
+| `not_signed_in` | Run `uber-mcp login`, or on a server ask the assistant to connect Uber (`uber_connect`) or use `uber-mcp admin login`. |
+| `session_expired` | Uber ended the sign-in: sign in again (as above). `uber_status` shows `signed_in` true once it worked. |
 | `session_invalid` | The saved session cannot be read (damaged, sealed under another `UBER_SESSION_KEY`, or Uber now shows another rider): sign in again. |
 | `blocked` | Uber pushed back (a 429 or a challenge page); calls resume after the pause (`uber_status.paused_until`). |
 | `budget_exhausted` | Today's request budget is spent; it resets at 00:00 UTC (`UBER_DAILY_BUDGET`). |
@@ -303,6 +373,9 @@ The login service (`ghcr.io/benjamin-di/uber-mcp-login-browser`, `python -m uber
 | `no_active_trip` | There is no ride to cancel. |
 | `uber_refused` | Uber did not accept the request (`uber_error` has Uber's key when it is a plain identifier); nothing was booked. Try in the Uber app. |
 | `outcome_unknown` | A request or cancellation was sent but the answer was lost: check `uber_ride_status` (and `uber-mcp admin audit`) before anything else. |
+| `account_not_connected` | The request named an account this server does not have (or a malformed one): add it and sign it in ([Accounts](#accounts)). Nothing was done. |
+| `connect_unavailable` | This server makes no sign-in links (`UBER_PUBLIC_URL` or the login service is not set): sign in as for `not_signed_in`. |
+| `connect_limited` | More than 6 links for this account in an hour: use the newest one, or wait. |
 | `internal_error` | A bug; retry once, and [open an issue](https://github.com/benjamin-di/uber-mcp-server/issues) if it repeats. |
 
 ## How it works

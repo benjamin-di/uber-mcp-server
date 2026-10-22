@@ -10,6 +10,10 @@ uber-mcp health             exit 0 when the HTTP server's /health answers (conta
 uber-mcp admin login        on a server: start a sign-in in the login service and wait for the person
 uber-mcp admin freeze [WHY] stop all booking now (pending previews are dropped); admin unfreeze resumes
 uber-mcp admin audit [-n N] the last booking attempts
+uber-mcp admin account ...  more accounts on one server: list, add ID, caps ID, remove ID (README "Accounts")
+
+status, admin login, freeze, unfreeze and audit take --account ID (default: the default account; freeze without it
+freezes every account).
 """
 
 from __future__ import annotations
@@ -42,7 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         help="your installed Google Chrome (default) or the Chromium that `patchright install chromium` adds",
     )
     commands.add_parser("logout", help="delete the saved session")
-    commands.add_parser("status", help="show the saved session, today's budget and the booking caps")
+    status = commands.add_parser("status", help="show the saved session, today's budget and the booking caps")
+    status.add_argument("--account", help="an account id (default: the default account)")
     health = commands.add_parser("health", help="check the HTTP server's /health")
     health.add_argument("--url", default="http://127.0.0.1:8000/health")
     admin = commands.add_parser("admin", help="server operations: sign-in, freeze, audit")
@@ -50,11 +55,27 @@ def main(argv: list[str] | None = None) -> int:
     admin_login = admin_commands.add_parser("login", help="sign in through the login service")
     admin_login.add_argument("--layout", choices=("desktop", "phone"), default="desktop")
     admin_login.add_argument("--minutes", type=int, default=20, help="how long to wait for the person")
+    admin_login.add_argument("--account", help="the account to sign in (default: the default account)")
     freeze = admin_commands.add_parser("freeze", help="stop all booking now")
     freeze.add_argument("reason", nargs="*")
-    admin_commands.add_parser("unfreeze", help="allow booking again (within the caps)")
+    freeze.add_argument("--account", help="only this account (default: every account)")
+    unfreeze = admin_commands.add_parser("unfreeze", help="allow booking again (within the caps)")
+    unfreeze.add_argument("--account", help="only this account (default: every account)")
     audit = admin_commands.add_parser("audit", help="the last booking attempts")
     audit.add_argument("-n", type=int, default=20)
+    audit.add_argument("--account", help="an account id (default: the default account)")
+    account = admin_commands.add_parser("account", help="more accounts on one server")
+    account_commands = account.add_subparsers(dest="account_command", required=True)
+    account_commands.add_parser("list", help="every account, signed in or not, with its caps")
+    account_add = account_commands.add_parser("add", help="add an account (read-only until it has caps)")
+    account_caps = account_commands.add_parser("caps", help="set an account's caps (none: read-only)")
+    for sub in (account_add, account_caps):
+        sub.add_argument("id")
+        sub.add_argument("--max-fare", help="the most one ride may cost, e.g. 'USD 80'")
+        sub.add_argument("--max-fare-24h", help="the most all rides in any 24 hours may cost, same currency")
+    account_remove = account_commands.add_parser("remove", help="delete an account: session, ledger, audit log")
+    account_remove.add_argument("id")
+    account_remove.add_argument("--yes", action="store_true", help="really delete it")
     options = parser.parse_args(args)
 
     if options.command == "health":
@@ -69,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     if options.command == "logout":
         return _logout(settings)
     if options.command == "status":
-        return _status(settings)
+        return _status(settings, options.account)
     if options.command == "admin":
         return _admin(settings, options)
 
@@ -160,33 +181,105 @@ def _logout(settings: Settings) -> int:
     return 0
 
 
-def _status(settings: Settings) -> int:
-    from .server import UberService
+def _account_settings(settings: Settings, account_id: str | None) -> Settings | None:
+    """The settings of ``account_id`` (None: the default account), or None after printing why not."""
+    from . import accounts
+    from .errors import UberError
 
-    out = UberService(settings).status(check=False)
-    out["state_dir"] = str(settings.state_dir)
+    if account_id is None:
+        return settings
+    try:
+        return accounts.settings_for(settings, account_id)
+    except UberError:
+        print(f"uber-mcp: no account {account_id} (`uber-mcp admin account list`).", file=sys.stderr)
+        return None
+
+
+def _status(settings: Settings, account_id: str | None = None) -> int:
+    from .server import Accounts
+
+    account = _account_settings(settings, account_id)
+    if account is None:
+        return 2
+    out = Accounts.from_settings(settings).get(account_id).status(check=False)
+    out["state_dir"] = str(account.state_dir)
     print(json.dumps(out, indent=2, ensure_ascii=False))
     return 0
 
 
 def _admin(settings: Settings, options: argparse.Namespace) -> int:
+    from . import accounts
     from .booking import Ledger
 
-    ledger = Ledger(settings.state_dir)
-    if options.admin == "freeze":
-        dropped = ledger.freeze(" ".join(options.reason) or "frozen by the operator")
-        print(f"Booking is frozen; {dropped} pending preview(s) dropped. `uber-mcp admin unfreeze` resumes.")
+    if options.admin == "account":
+        return _admin_account(settings, options)
+    if options.admin in ("freeze", "unfreeze"):
+        ids = [options.account] if options.account else accounts.configured(settings)
+        for account_id in ids:
+            account = _account_settings(settings, account_id)
+            if account is None:
+                return 2
+            ledger = Ledger(account.state_dir)
+            if options.admin == "freeze":
+                dropped = ledger.freeze(" ".join(options.reason) or "frozen by the operator")
+                print(f"{account_id}: booking is frozen; {dropped} pending preview(s) dropped. "
+                      "`uber-mcp admin unfreeze` resumes.")  # fmt: skip
+            else:
+                ledger.freeze(None)
+                print(f"{account_id}: booking is allowed again, within the caps." if account.booking_enabled else
+                      f"{account_id}: unfrozen, but booking stays off: it has no caps.")  # fmt: skip
         return 0
-    if options.admin == "unfreeze":
-        ledger.freeze(None)
-        print("Booking is allowed again, within the caps." if settings.booking_enabled else
-              "Unfrozen, but booking stays off: UBER_MAX_FARE and UBER_MAX_FARE_24H are not set.")  # fmt: skip
-        return 0
+    account = _account_settings(settings, options.account)
+    if account is None:
+        return 2
     if options.admin == "audit":
-        for entry in ledger.recent_audit(max(1, min(options.n, 500))):
+        for entry in Ledger(account.state_dir).recent_audit(max(1, min(options.n, 500))):
             print(json.dumps(entry, ensure_ascii=False))
         return 0
-    return _admin_login(settings, options.layout, options.minutes)
+    return _admin_login(account, options.layout, options.minutes)
+
+
+def _admin_account(settings: Settings, options: argparse.Namespace) -> int:
+    from . import accounts
+    from .errors import UberError
+    from .session import Session
+
+    try:
+        if options.account_command == "list":
+            for account_id in accounts.configured(settings):
+                try:
+                    account = accounts.settings_for(settings, account_id)
+                except UberError:
+                    print(f"{account_id}: account.json unreadable (fix or remove it)")
+                    continue
+                session = Session(account.session_path, account.session_key).status()
+                caps = (f"{account.max_fare.display()} a ride, {account.max_fare_24h.display()} a day"
+                        if account.max_fare and account.max_fare_24h else "none (read-only)")  # fmt: skip
+                default = " (default)" if account_id == settings.default_account else ""
+                # A saved session is "unverified" in a fresh process until a read proves it ("live").
+                print(f"{account_id}{default}: session={session.get('state')} caps: {caps}")
+            return 0
+        if options.account_command == "add":
+            accounts.add(settings, options.id, options.max_fare, options.max_fare_24h)
+            read_only = "" if options.max_fare else " It is read-only until it has caps (`admin account caps`)."
+            print(f"Added account {options.id}.{read_only} Sign it in with `uber-mcp admin login --account "
+                  f"{options.id}`.")  # fmt: skip
+            return 0
+        if options.account_command == "caps":
+            caps = accounts.set_caps(settings, options.id, options.max_fare, options.max_fare_24h)
+            print(f"{options.id}: caps {caps['max_fare']} a ride, {caps['max_fare_24h']} a day; the server applies "
+                  "them on its next call." if caps else f"{options.id}: no caps; it is read-only now.")  # fmt: skip
+            return 0
+        if not options.yes:
+            print(f"uber-mcp: this deletes account {options.id}'s session, ledger and audit log; add --yes.",
+                  file=sys.stderr)  # fmt: skip
+            return 2
+        accounts.remove(settings, options.id)
+        print(f"Removed account {options.id}: its session, ledger and audit log are deleted.")
+        return 0
+    except accounts.AccountConfigError as exc:
+        print(f"uber-mcp: {exc}", file=sys.stderr)
+        return 2
 
 
 def _admin_login(settings: Settings, layout: str, minutes: int) -> int:

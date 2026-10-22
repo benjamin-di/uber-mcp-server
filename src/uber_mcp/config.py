@@ -3,7 +3,8 @@
 The session lives in ``UBER_STATE_DIR``: ``session.json`` (0600) as ``uber-mcp login`` writes it on a person's own
 computer, or ``session.bin``, sealed with AES-GCM under ``UBER_SESSION_KEY``, when the key is set (servers).
 Booking is off unless both caps are set: ``UBER_MAX_FARE`` (one ride) and ``UBER_MAX_FARE_24H`` (everything
-booked in any 24 hours), each a currency and an amount, e.g. ``USD 80``.
+booked in any 24 hours), each a currency and an amount, e.g. ``USD 80``. Those are the default account's; further
+accounts keep theirs in their own folder (``accounts``).
 """
 
 from __future__ import annotations
@@ -52,6 +53,9 @@ class Settings:
     login_url: str | None = None  # the login service (uber_login) for `uber-mcp admin login`
     login_token: str | None = field(default=None, repr=False)
     login_view_url: str = "http://localhost:8766"  # where the person opens the sign-in window (through ssh)
+    default_account: str = "default"  # the id of the account kept right in state_dir
+    trusted_account_header: str | None = None  # set by the operator's authenticating proxy (accounts)
+    public_url: str | None = None  # where people reach this server; enables uber_connect's sign-in links (connect)
 
     def __post_init__(self) -> None:
         if (self.max_fare is None) != (self.max_fare_24h is None):
@@ -63,6 +67,12 @@ class Settings:
                 raise ConfigError("UBER_MAX_FARE cannot be above UBER_MAX_FARE_24H")
         if self.login_url and (not self.login_token or len(self.login_token) < 32):
             raise ConfigError("UBER_LOGIN_URL needs UBER_LOGIN_TOKEN (32+ characters)")
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", self.default_account):
+            raise ConfigError("UBER_DEFAULT_ACCOUNT must be 1-32 lower-case letters, digits or dashes")
+        if self.trusted_account_header is not None and not re.fullmatch(
+            r"[A-Za-z][A-Za-z0-9-]{0,63}", self.trusted_account_header
+        ):
+            raise ConfigError("UBER_TRUSTED_ACCOUNT_HEADER must be a header name such as X-Account")
 
     @property
     def booking_enabled(self) -> bool:
@@ -86,7 +96,15 @@ class Settings:
             login_url=_internal_url(env),
             login_token=(env.get("UBER_LOGIN_TOKEN") or "").strip() or None,
             login_view_url=(env.get("UBER_LOGIN_VIEW_URL") or "http://localhost:8766").strip().rstrip("/"),
+            default_account=(env.get("UBER_DEFAULT_ACCOUNT") or "default").strip(),
+            trusted_account_header=(env.get("UBER_TRUSTED_ACCOUNT_HEADER") or "").strip() or None,
+            public_url=_public_url(env),
         )
+
+    @property
+    def connect_enabled(self) -> bool:
+        """Self-service sign-in links (``uber_connect``): a public address and a login service."""
+        return bool(self.public_url and self.login_url and self.login_token)
 
 
 def parse_key(raw: str) -> bytes:
@@ -141,6 +159,21 @@ def _internal_url(env: Mapping[str, str]) -> str | None:
         return None
     if not re.fullmatch(r"http://[a-z0-9][a-z0-9.-]{0,62}:[0-9]{2,5}", raw):
         raise ConfigError("UBER_LOGIN_URL must look like http://uber-mcp-login:8080")
+    return raw
+
+
+def _public_url(env: Mapping[str, str]) -> str | None:
+    """The address people reach this server at (the parent of its /mcp endpoint), e.g. https://example.com/uber.
+    HTTPS, or plain http on localhost for trying it out; no query or fragment."""
+    raw = (env.get("UBER_PUBLIC_URL") or "").strip().rstrip("/")
+    if not raw:
+        return None
+    if not re.fullmatch(
+        r"(https://[a-z0-9][a-z0-9.-]{0,252}(:[0-9]{2,5})?|http://(localhost|127\.0\.0\.1)(:[0-9]{2,5})?)"
+        r"(/[A-Za-z0-9._~-]+){0,8}",
+        raw,
+    ):
+        raise ConfigError("UBER_PUBLIC_URL must look like https://example.com/uber (no query or fragment)")
     return raw
 
 

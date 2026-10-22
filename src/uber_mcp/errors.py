@@ -13,12 +13,15 @@ from typing import Any
 NEXT_STEP: dict[str, str] = {
     "invalid_argument": "Fix the arguments and call again.",
     "not_signed_in": (
-        "No Uber account is signed in yet. Ask the person to run `uber-mcp login` on the computer this server runs "
-        'on, or the operator of a hosted server to start a sign-in (README "Signing in").'
+        "No Uber account is signed in yet. Call uber_connect: on a server that offers it, it gives a one-time link "
+        "where the person signs in to Uber themselves; give them the link. Otherwise ask the person to run "
+        '`uber-mcp login` on the computer this server runs on, or the operator to start a sign-in (README "Signing '
+        'in").'
     ),
     "session_expired": (
-        "Uber ended the sign-in. Ask the person to sign in again (`uber-mcp login`, or the operator's sign-in on a "
-        "hosted server). Do not retry until uber_status shows signed_in true."
+        "Uber ended the sign-in. Call uber_connect for a one-time sign-in link and give it to the person (or, where "
+        "it is not offered, ask them to run `uber-mcp login` or the operator to sign them in). Do not retry until "
+        "uber_status shows signed_in true."
     ),
     "session_invalid": (
         "The saved Uber session cannot be read (damaged, or saved under another key). Ask the person to sign in "
@@ -69,6 +72,19 @@ NEXT_STEP: dict[str, str] = {
         "never repeat the request blindly."
     ),
     "internal_error": "uber-mcp failed unexpectedly. Retry once; if it repeats, tell the operator.",
+    "account_not_connected": (
+        "This person has no Uber account on this server yet. Nothing was done. Tell them to ask the operator to add "
+        'their account (README "Accounts"); once it is added, uber_connect gives them a link to sign in to Uber '
+        "themselves. Do not retry until then."
+    ),
+    "connect_unavailable": (
+        "This server does not offer sign-in links. Ask the person to run `uber-mcp login` on the computer this server "
+        'runs on, or the operator to sign them in (README "Signing in").'
+    ),
+    "connect_limited": (
+        "Too many sign-in links were made for this account in the last hour. Give the person the newest link, or "
+        "try again later."
+    ),
 }
 
 RETRYABLE = frozenset({"busy", "upstream_error", "internal_error"})

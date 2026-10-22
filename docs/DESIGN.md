@@ -15,7 +15,8 @@ reasons behind them.
 | `places.py`, `rides.py`, `trips.py`, `account.py` | Turning tool arguments into Uber's inputs and Uber's answers into tool results. |
 | `state.py`, `fsio.py` | State shared by processes: budget, pause, unresolved errors, canary results; atomic writes and file locks. |
 | `uber_login/` | The sign-in window (`window.py`, also used by `uber-mcp login`) and the login service for servers (`app.py`, `logins.py`). |
-| `login_client.py` | The server's only way to the login service (`uber-mcp admin login`). |
+| `login_client.py` | The server's only way to the login service (`uber-mcp admin login`, sign-in links). |
+| `connect.py`, `paste.js` | Sign-in links (`uber_connect`): the page, its calls, noVNC's files and the live view relayed from the login service; the paste add-on for noVNC's viewer. |
 
 ## Decisions
 
@@ -47,11 +48,14 @@ reasons behind them.
 | The person signs in in a real browser window; nothing on the sign-in is automated | Uber signs in with one-time codes, Google, Apple or a QR code, behind its own bot checks. A person passes them; the server keeps the cookies. `tests/test_login_safety.py` pins that no click, keystroke or fill exists. |
 | The window shows only Uber's pages (and Google's or Apple's sign-in); after landing it opens Uber's trips site once and reads both | `riders.uber.com` signs in through Uber's single sign-on on first visit and has its own cookies; proving both before saving means a saved session works for every tool. |
 | On a server, a login service beside it: a virtual display, a remote-desktop server on loopback and noVNC, per sign-in | A person can sign in from any browser, including a phone, without the server ever seeing a password. The service's API needs a bearer, each sign-in's view and stream need their own token, a proven session is handed over once (and dropped after 5 minutes), and the browser profile is deleted. The service holds no key and no session; the server seals what it receives. |
+| Sign-in links served by the server itself, not by the login service | The server knows who is calling (the trusted account header), so it can bind a link to the caller's account and store the session there; the login service stays private with its bearer. The id is the only credential on the page, so it is single-use, short-lived and rate-limited, and it can only put a session into its account, never read one. |
+| Paste by typing the clipboard's text into the window, from a small module beside noVNC's stock viewer | noVNC 1.6 swallows Ctrl+V on its canvas and has no clipboard API support; letting the browser's own paste event fire and typing the text key by key (as noVNC's on-screen keyboard does) needs no change to noVNC and no clipboard permission. `scripts/paste_e2e.py` checks it in real browsers in the release workflow. |
 | Places as saved labels, Google place ids, `lat,lng` or free text echoed back with alternatives | Agents mostly know names; Uber's search uses Google place ids, so ids from a Google Maps tool work too. A free-text match is shown, never trusted silently. A `lat,lng` keeps the exact point asked for, so an airport terminal's point sets the rider down there. |
 | Short caches: the account and saved places 10 minutes, Uber's guess of the rider's position an hour | Pricing and booking read the payment methods on every call; they change rarely. |
 | Errors from a fixed `NEXT_STEP` table; booking decisions (`over_cap`, `price_rose`, `trip_active`, ...) are not counted as failures | Exception text can echo cookies or places. A cap doing its job is not a service problem, so `last_error` ignores it. |
 | stdio by default, HTTP only behind a bearer | A client on the same computer starts the server and owns it; over a network the bearer is the only gate, so the server refuses HTTP without one. |
 | Open output schemas | A closed schema breaks cached MCP clients when a field is added. |
+| Several accounts: the default in the state folder, others in `accounts/<id>/`; the caller's account from a header the operator's authenticating proxy sets, read only with the server's bearer | A household shares one server and one home connection to Uber, so pacing, budget and pause stay shared while sessions, caps, ledgers and confirm tokens stay per account. The server has no identity of its own to check; it trusts the proxy that already authenticated the person, which is why only that proxy may hold the bearer. An unknown account fails closed (`account_not_connected`) and never falls back to the default, and a new account cannot book until it is given caps. |
 
 ## Not tested, and why
 

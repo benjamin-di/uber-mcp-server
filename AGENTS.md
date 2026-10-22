@@ -24,7 +24,8 @@ operation the way [docs/uber-web-api.md](docs/uber-web-api.md) describes. Fixtur
 - `tests/test_safety.py` is the safety boundary: a new Uber host, a new GraphQL operation (read or money), a network
   import outside `uber.py` and `login_client.py` (and `cli.py`'s local health check), or a money operation named or
   sent anywhere but `booking.py` is a deliberate change there, never a side effect. `uber_request_ride` and
-  `uber_cancel_ride` are the only tools not marked read-only, and they are marked destructive.
+  `uber_cancel_ride` are the only destructive tools; `uber_connect` (a sign-in link, nothing at Uber) is the only
+  other tool not marked read-only.
 - **Booking lives only in `booking.py`.** `TripRequest` and `TripCancel` go out only through
   `Uber.graphql(..., money=True)` from there, and only after a preview, a single-use confirm token bound to the
   preview's arguments, a fresh price no higher than the approved one, both caps, the freeze check and the
@@ -34,6 +35,10 @@ operation the way [docs/uber-web-api.md](docs/uber-web-api.md) describes. Fixtur
 - `tests/test_login_safety.py`: the sign-in window shows only Uber's pages (and Google's or Apple's sign-in) and
   automates nothing on them: no click, keystroke, fill or form call exists in `src/uber_login`. The login service's
   API needs its bearer and the person's view needs its per-sign-in token.
+- Sign-in links (`connect.py`, `tests/test_connect.py`): a link is made only for the caller's own account, works once
+  and for a short time, and can only put a session into that account (never show, return or read one); a session for
+  a different rider than the account already has, or one another account holds, is refused. The paste add-on
+  (`paste.js`) types what the person pastes on their own page; it never logs or keeps the text.
 - Tool results never carry exception text or cookies; errors use the fixed `NEXT_STEP` table in `errors.py`. Logs
   never carry tool arguments (places), cookie values or Uber's error text.
 - `operations.json` holds Uber's own GraphQL documents, refreshed with `scripts/sync-operations.py`; never hand-write

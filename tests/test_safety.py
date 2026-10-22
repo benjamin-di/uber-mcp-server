@@ -89,6 +89,9 @@ def test_money_tools_are_marked_destructive(service):
     tools = {t.name: t for t in asyncio.run(create_server(service).list_tools())}
     for name in ("uber_request_ride", "uber_cancel_ride"):
         assert tools[name].annotations.destructive_hint is True and tools[name].annotations.read_only_hint is False
+    # uber_connect makes a sign-in link (state on this server, nothing at Uber): not read-only, never destructive.
+    link = tools["uber_connect"].annotations
+    assert link.read_only_hint is False and link.destructive_hint is False and link.open_world_hint is False
     for name, tool in tools.items():
-        if name not in ("uber_request_ride", "uber_cancel_ride"):
+        if name not in ("uber_request_ride", "uber_cancel_ride", "uber_connect"):
             assert tool.annotations.read_only_hint is True, name
