@@ -81,7 +81,7 @@ def test_the_runner_opens_ubers_page_on_the_windows_display():
         app.sign_in, app.policy_installed = original, installed
     assert seen["env"]["DISPLAY"] == ":92" and seen["layout"] == "phone" and seen["profile"] in window.profiles
     assert window.state == "waiting" and window.host == "auth.uber.com"
-    assert seen["locked"] is True  # kiosk mode, passkeys hidden (signin-window's browser)
+    assert seen["locked"] is True  # kiosk mode, Ctrl+T/Ctrl+N closed (signin-window's browser)
 
 
 def test_no_window_opens_without_the_managed_policy():

@@ -6,7 +6,7 @@ own checks included (``tests/test_login_safety.py`` pins that). Once Uber lands 
 Uber's trips site once (riders.uber.com signs in through Uber's single sign-on on first visit), reads both as the
 rider with the same cookies, and returns. Only Uber's pages (and Google's or Apple's, for their sign-in buttons)
 may be shown. The login service's window is also locked down (``locked``, signin-window's ``browser``): kiosk mode
-with no address bar, no passkey offers, and the image's managed policy (no offer to save the password).
+with no address bar, and the image's managed policy (no offer to save the password).
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ async def sign_in(
 
     Returns ``{account: {uuid, name}, user_agent, cookies}``. ``channel="chrome"`` uses the installed Google Chrome;
     None uses the browser patchright installed. ``on_page`` hears the host of the page shown, every look. ``locked``:
-    a window someone else's screen shows (the login service): kiosk mode, passkeys hidden, Ctrl+T/Ctrl+N closed.
+    a window someone else's screen shows (the login service): kiosk mode, Ctrl+T/Ctrl+N closed.
     """
     from patchright.async_api import async_playwright
 
