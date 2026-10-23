@@ -5,7 +5,8 @@
 // phase) and keeps it from noVNC without preventing the browser's default, so the browser fires a `paste` event with
 // the text; then it releases the modifiers noVNC already pressed on the remote side and types the text key by key,
 // paced, the way noVNC's own on-screen keyboard input does. If no paste event comes, it asks
-// navigator.clipboard.readText() instead. The text is never logged or stored.
+// navigator.clipboard.readText() instead. Each Ctrl+V is typed once, by whichever of the two has its text first.
+// The text is never logged or stored.
 import UI from "./app/ui.js";
 import KeyTable from "./core/input/keysym.js";
 import keysyms from "./core/input/keysymdef.js";
@@ -13,11 +14,11 @@ import keysyms from "./core/input/keysymdef.js";
 const MAX_CHARS = 1000;
 const PACE_MS = 20;
 const FALLBACK_MS = 300;
+const LATE_PASTE_MS = 5000;
 const SPECIAL = { "\n": KeyTable.XK_Return, "\t": KeyTable.XK_Tab };
 
 let typing = false;
-let pending = null;
-let fallbackAt = 0;
+let attempt = null;  // the latest Ctrl+V: when it was pressed, its fallback timer, and whether its text was typed
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -85,21 +86,32 @@ document.addEventListener("keydown", event => {
   if (!paste || editable(event.target) || !connected()) return;
   // Not preventDefault: the browser's paste must still happen. Only noVNC must not see this key.
   event.stopPropagation();
-  clearTimeout(pending);
-  pending = setTimeout(() => {
-    pending = null;
-    if (navigator.clipboard && navigator.clipboard.readText) {
-      fallbackAt = Date.now();
-      navigator.clipboard.readText().then(type, () => {});
-    }
+  // Each Ctrl+V is an attempt of its own, so what an earlier one did never holds this one back. An earlier one whose
+  // fallback is still waiting gives way to it.
+  if (attempt) clearTimeout(attempt.timer);
+  const current = { at: Date.now(), timer: null, typed: false };
+  attempt = current;
+  current.timer = setTimeout(() => {
+    if (!navigator.clipboard || !navigator.clipboard.readText) return;
+    navigator.clipboard.readText().then(text => {
+      if (current.typed || !text) return;  // its paste event came first after all, or there is no text
+      current.typed = true;
+      type(text);
+    }, () => {});  // refused: nothing typed, so this Ctrl+V's paste event may still type its text
   }, FALLBACK_MS);
 }, true);
 
 document.addEventListener("paste", event => {
   if (editable(event.target) || !connected()) return;
-  clearTimeout(pending);
-  pending = null;
   event.preventDefault();
-  if (Date.now() - fallbackAt < 5000) return;  // a late paste event after the fallback already typed the text
+  // The paste event of the latest Ctrl+V settles that attempt. One with no Ctrl+V before it, such as the browser's
+  // own Paste menu, is typed as it is.
+  const current = attempt && Date.now() - attempt.at < LATE_PASTE_MS ? attempt : null;
+  if (current) {
+    clearTimeout(current.timer);
+    attempt = null;
+    if (current.typed) return;  // a late paste event after the fallback already typed this Ctrl+V's text
+    current.typed = true;
+  }
   type(event.clipboardData ? event.clipboardData.getData("text/plain") : "");
 }, true);
