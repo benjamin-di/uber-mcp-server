@@ -5,7 +5,8 @@ on the person's own screen). Nothing here clicks, types or fills: the person doe
 own checks included (``tests/test_login_safety.py`` pins that). Once Uber lands on m.uber.com, the window opens
 Uber's trips site once (riders.uber.com signs in through Uber's single sign-on on first visit), reads both as the
 rider with the same cookies, and returns. Only Uber's pages (and Google's or Apple's, for their sign-in buttons)
-may be shown.
+may be shown. The login service's window is also locked down (``locked``, signin-window's ``browser``): kiosk mode
+with no address bar, no passkey offers, and the image's managed policy (no offer to save the password).
 """
 
 from __future__ import annotations
@@ -16,6 +17,9 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
+
+from signin_window.browser import LAUNCH_ARGS, harden
+from signin_window.hosts import top_level
 
 from uber_mcp.session import clean_cookies
 from uber_mcp.uber import ENDPOINTS, operations
@@ -62,11 +66,13 @@ async def sign_in(
     channel: str | None = None,
     extra_args: tuple[str, ...] = (),
     on_page: Callable[[str], None] | None = None,
+    locked: bool = False,
 ) -> dict[str, Any]:
     """Open Uber's sign-in page in a browser using ``profile`` and wait until the person has signed in.
 
     Returns ``{account: {uuid, name}, user_agent, cookies}``. ``channel="chrome"`` uses the installed Google Chrome;
-    None uses the browser patchright installed. ``on_page`` hears the host of the page shown, every look.
+    None uses the browser patchright installed. ``on_page`` hears the host of the page shown, every look. ``locked``:
+    a window someone else's screen shows (the login service): kiosk mode, passkeys hidden, Ctrl+T/Ctrl+N closed.
     """
     from patchright.async_api import async_playwright
 
@@ -79,14 +85,21 @@ async def sign_in(
             no_viewport=True,
             user_agent=LAYOUTS[layout]["user_agent"],
             env=dict(env) if env is not None else None,
-            args=[f"--window-size={width},{height}", *extra_args, "--no-first-run", "--disable-features=Translate"],
+            args=[
+                f"--window-size={width},{height}",
+                *extra_args,
+                "--no-first-run",
+                "--disable-features=Translate",
+                *(LAUNCH_ARGS if locked else ()),
+            ],
         )
         try:
+            if locked:
+                await harden(ctx)
 
             async def guard(route: Any) -> None:
                 request = route.request
-                top = request.is_navigation_request() and request.frame.parent_frame is None
-                if top and not allowed_document(request.url):
+                if top_level(request) and not allowed_document(request.url):
                     await route.abort()
                     return
                 await route.continue_()

@@ -62,7 +62,7 @@ class FakeLogin:
         self.closed.append(login_id)
         self.states.pop(login_id, None)
 
-    def static(self, path: str) -> tuple[int, bytes, str]:
+    def static(self, path: str, window_id: str | None = None) -> tuple[int, bytes, str]:
         if not STATIC.match(path):
             return 404, b"", "text/plain"
         if path == "vnc.html":

@@ -51,6 +51,7 @@ RUN curl --fail --silent --show-error --location \
 COPY requirements-login.lock /tmp/requirements-login.lock
 RUN uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-login.lock \
  && patchright install --with-deps chromium \
+ && python -m signin_window.browser install-policy \
  && rm -rf /var/lib/apt/lists/* /tmp/requirements-login.lock \
  && useradd --uid 1000 --home-dir /home/login --shell /usr/sbin/nologin login \
  && install -d -o 1000 -g 1000 -m 0700 /home/login

@@ -74,9 +74,29 @@ def test_the_runner_opens_ubers_page_on_the_windows_display():
 
     window = Window("w" * 24, "phone", 2, 0.0, 60.0)
     original, app.sign_in = app.sign_in, sign_in
+    installed, app.policy_installed = app.policy_installed, lambda: True
     try:
         assert asyncio.run(app.run_browser(window)) == {"account": {"uuid": "u"}, "cookies": []}
     finally:
-        app.sign_in = original
+        app.sign_in, app.policy_installed = original, installed
     assert seen["env"]["DISPLAY"] == ":92" and seen["layout"] == "phone" and seen["profile"] in window.profiles
     assert window.state == "waiting" and window.host == "auth.uber.com"
+    assert seen["locked"] is True  # kiosk mode, passkeys hidden (signin-window's browser)
+
+
+def test_no_window_opens_without_the_managed_policy():
+    import asyncio
+
+    import pytest
+    from signin_window.service import Window
+
+    from uber_login import app
+
+    installed, app.policy_installed = app.policy_installed, lambda: False
+    try:
+        with pytest.raises(app.PolicyMissing):
+            asyncio.run(app.run_browser(Window("w" * 24, "desktop", 1, 0.0, 60.0)))
+    finally:
+        app.policy_installed = installed
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile.login").read_text()
+    assert "python -m signin_window.browser install-policy" in dockerfile
