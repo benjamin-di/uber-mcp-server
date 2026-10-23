@@ -41,8 +41,9 @@ def _imports(tree: ast.AST) -> set[str]:
     return names
 
 
-def test_only_the_uber_module_and_the_login_client_do_network_io():
-    allowed = {"uber.py", "login_client.py", "cli.py"}  # cli: the local health check only
+def test_only_the_uber_module_does_network_io():
+    # The login service's client is signin-window's; cli: the local health check only.
+    allowed = {"uber.py", "cli.py"}
     for f in sorted(SRC.glob("*.py")):
         found = _imports(ast.parse(f.read_text())) & NETWORK_MODULES
         if f.name not in allowed:

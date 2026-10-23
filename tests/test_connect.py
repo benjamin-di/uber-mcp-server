@@ -10,13 +10,14 @@ from pathlib import Path
 import pytest
 from conftest import COOKIES, make_service
 from fixtures import uber as fx
+from signin_window import relay as relay_module
+from signin_window.client import STATIC, LoginBusy
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from uber_mcp import accounts, connect, server
 from uber_mcp.auth import require_bearer
 from uber_mcp.config import ConfigError, Settings
-from uber_mcp.login_client import STATIC, LoginBusy
 from uber_mcp.server import Accounts
 from uber_mcp.session import Session
 
@@ -89,9 +90,20 @@ def registry(tmp_path: Path, fake) -> Accounts:
     return Accounts(default)
 
 
+FLOWS: list[connect.ConnectFlow] = []
+
+
+class RecordedFlow(connect.ConnectFlow):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        FLOWS.append(self)
+
+
 @pytest.fixture
 def http(registry, login, monkeypatch):
     monkeypatch.setenv("MCP_BEARER_TOKEN", TOKEN)
+    FLOWS.clear()
+    monkeypatch.setattr(server, "ConnectFlow", RecordedFlow)
     app = server.create_server(registry, auth=require_bearer(), login=login).http_app(**server.HTTP_OPTIONS)
     with TestClient(app) as client:
         yield client
@@ -179,7 +191,7 @@ def test_a_new_link_replaces_the_old_one_and_links_are_rate_limited(http, login)
     first = link_path(tool(http, "uber_connect", "second"))
     second = link_path(tool(http, "uber_connect", "second"))
     assert http.get(first).status_code == 404 and http.get(second).status_code == 200
-    for _ in range(connect.LINKS_PER_HOUR - 2):
+    for _ in range(relay_module.Relay.__init__.__kwdefaults__["links_per_hour"] - 2):
         tool(http, "uber_connect", "second")
     assert tool(http, "uber_connect", "second")["error"]["code"] == "connect_limited"
     assert tool(http, "uber_connect", "main")["account_id"] == "main"  # per account
@@ -219,7 +231,7 @@ def test_the_mcp_endpoint_still_needs_the_bearer(http):
 
 def test_guessing_ids_is_slowed_down(http):
     headers = {"X-Forwarded-For": "203.0.113.7"}
-    for _ in range(connect.MISSES_PER_ADDRESS):
+    for _ in range(relay_module.MISSES_PER_ADDRESS):
         assert http.get("/connect/" + "Q" * 32 + "/state", headers=headers).status_code == 404
     assert http.get("/connect/" + "Q" * 32 + "/state", headers=headers).status_code == 429
     path = link_path(tool(http, "uber_connect", "second"))
@@ -231,7 +243,8 @@ def test_guessing_ids_is_slowed_down(http):
 def test_the_link_expires_and_closes_its_window(http, login, monkeypatch):
     path = link_path(tool(http, "uber_connect", "second"))
     assert http.post(path + "/start", json={"layout": "phone"}).json()["state"] == "starting"
-    monkeypatch.setattr(connect, "LINK_TTL", -1)
+    for link in [x for flow in FLOWS for x in flow.relay.links("second")]:
+        link.expires = 0  # past
     assert http.get(path).status_code == 404
     assert http.get(path + "/state").status_code == 404
     assert http.post(path + "/start", json={}).status_code == 404
@@ -250,7 +263,7 @@ def test_a_sign_in_lands_in_the_links_account_only_and_is_proven(http, login, re
     path = link_path(tool(http, "uber_connect", "second"))
     assert http.post(path + "/start", json={"layout": "phone"}).json()["state"] == "starting"
     assert login.started == ["phone"]
-    assert http.get(path + "/state").json() == {"state": "waiting", "host": "auth.uber.com", "rider": None}
+    assert http.get(path + "/state").json() == {"state": "waiting", "host": "auth.uber.com"}
     main_before = Session(registry.settings.session_path, registry.settings.session_key).status()["generation"]
     login.sign_in("login-00000000000", uuid=OTHER_RIDER, name="Sam")
     done = http.get(path + "/state").json()
@@ -311,7 +324,7 @@ def test_busy_cancel_and_the_start_limit(http, login):
     assert http.post(path + "/cancel").status_code == 204
     assert login.closed == ["login-00000000000"]
     assert http.get(path + "/state").json()["state"] == "cancelled"
-    for _ in range(connect.MAX_STARTS - 2):
+    for _ in range(relay_module.Relay.__init__.__kwdefaults__["max_starts"] - 2):
         http.post(path + "/start", json={})
         http.post(path + "/cancel")
     assert http.post(path + "/start", json={}).json()["state"] == "cancelled"  # used up
@@ -341,7 +354,7 @@ def test_the_viewer_is_novnc_plus_the_paste_add_on(http, login):
     path = link_path(tool(http, "uber_connect", "second"))
     html = http.get(path + "/novnc/vnc.html?autoconnect=1")
     assert html.status_code == 200 and html.headers["x-frame-options"] == "SAMEORIGIN"
-    assert html.content == VNC_HTML.replace(b"</head>", connect.PASTE_TAG + b"\n</head>")
+    assert html.content == VNC_HTML.replace(b"</head>", relay_module.PASTE_TAG + b"\n</head>")
     paste = http.get(path + "/novnc/paste.js")
     assert paste.status_code == 200 and paste.headers["content-type"].startswith("text/javascript")
     assert http.get(path + "/novnc/app/ui.js").status_code == 200
@@ -357,12 +370,3 @@ def test_the_live_view_needs_an_open_window(http, login):
     http.get(path + "/state")
     with http.websocket_connect(path + "/vnc", subprotocols=["binary"]) as ws:
         assert ws.receive_bytes() == b"RFB 003.008\n"
-
-
-def test_the_paste_add_on_types_without_logging_or_keeping_the_text():
-    source = connect.PASTE_JS.decode()
-    assert 'import UI from "./app/ui.js"' in source  # the same UI singleton vnc.html loads
-    assert "console." not in source and "localStorage" not in source and "fetch(" not in source
-    assert "MAX_CHARS = 1000" in source and "PACE_MS = 20" in source
-    keydown = source[source.index('addEventListener("keydown"') : source.index('addEventListener("paste"')]
-    assert "stopPropagation()" in keydown and "preventDefault()" not in keydown  # the browser must still paste

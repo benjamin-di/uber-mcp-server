@@ -224,8 +224,8 @@ continues (so a chat app's link preview starts nothing).
   only `<prefix>/connect/...` to the server without authentication, never anything else, and do not add your
   bearer to it.
 - **Pasting works.** Ctrl+V (Cmd+V) in the window types the clipboard's text into Uber's page (a small add-on to
-  noVNC's viewer, `src/uber_mcp/paste.js`; up to 1000 characters, characters the window's keyboard has, which covers
-  ASCII). On a phone, noVNC's keyboard button opens the phone's keyboard, which pastes as usual.
+  noVNC's viewer from [signin-window](https://github.com/benjamin-di/signin-window), the library the sign-in window
+  and its links are built on; up to 1000 characters, characters the window's keyboard has, which covers ASCII). On a phone, noVNC's keyboard button opens the phone's keyboard, which pastes as usual.
 - Passkeys do not work in a remote window: sign in with a code or a password.
 
 Without the login service, sign in with `uber-mcp login` on a computer with a screen and copy its `session.json` into

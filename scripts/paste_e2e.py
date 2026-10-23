@@ -1,11 +1,11 @@
 """End-to-end check of a sign-in link and the paste add-on, with real browsers and no Uber.
 
-Runs the login service (``uber_login``) with a stand-in for Uber's page (a local page with one text field, in a
-headed Chromium on the login's virtual display), and the server (``uber_mcp``) mounted under ``/uber`` as behind a
-path-stripping reverse proxy. Then, as the person: asks ``uber_connect`` for a link, opens it in a headless Chromium,
-waits for the live view, focuses it, puts text on the clipboard, presses Ctrl+V and checks the text arrived in the
-remote field, typed. Clipboard *reading* is not granted to the page, so the text can only have come from the browser's
-own paste event. Last, closing the page must close the sign-in window.
+Runs the login service (``uber_login``: signin-window's service) with a stand-in for Uber's page (a local page with one
+text field, in a headed Chromium on the window's virtual display), and the server (``uber_mcp``) mounted under
+``/uber`` as behind a path-stripping reverse proxy. Then, as the person: asks ``uber_connect`` for a link, opens it in
+a headless Chromium, waits for the live view, focuses it, puts text on the clipboard, presses Ctrl+V and checks the
+text arrived in the remote field, typed. Clipboard *reading* is not granted to the page, so the text can only have come
+from the browser's own paste event. Last, closing the page must close the sign-in window.
 
 Needs Xvfb, x11vnc, patchright's Chromium and noVNC's files (the login image has them all):
 
@@ -29,11 +29,10 @@ from pathlib import Path
 
 import uvicorn
 from patchright.async_api import async_playwright
+from signin_window.service import Window, Windows, build_app
 from starlette.applications import Starlette
 from starlette.routing import Mount
 
-from uber_login.app import build_app
-from uber_login.logins import Login, Logins
 from uber_mcp import accounts
 from uber_mcp.auth import require_bearer
 from uber_mcp.config import Settings
@@ -91,33 +90,35 @@ async def main() -> int:
 
     async with async_playwright() as pw:
 
-        async def stand_in(login: Login, logins: Logins) -> None:
-            """Instead of Uber's page: one text field, in a headed Chromium on the login's display."""
+        async def stand_in(window: Window) -> None:
+            """Instead of Uber's page: one text field, in a headed Chromium filling the window's display (with no
+            window manager, keys go to the window under the pointer)."""
+            width, height = window.size
             browser = await pw.chromium.launch(
-                headless=False, env={**os.environ, "DISPLAY": login.display}, args=["--window-position=0,0"]
+                headless=False, env=window.env(), args=["--window-position=0,0", f"--window-size={width},{height}"]
             )
             try:
-                page = await browser.new_page(viewport={"width": 1000, "height": 600})
+                page = await browser.new_page(no_viewport=True)
                 await page.set_content(FIELD_PAGE)
                 await page.focus("#f")
                 remote["page"] = page
-                login.state, login.host = "waiting", "auth.uber.com"
-                await asyncio.Event().wait()  # until the login is closed
+                window.waiting("auth.uber.com")
+                await asyncio.Event().wait()  # until the window is closed
             finally:
                 remote.pop("page", None)
                 await browser.close()
 
-        logins = Logins(
+        windows = Windows(
+            stand_in,
             slots=1,
             minutes=5,
             xvfb=os.environ.get("UBER_LOGIN_XVFB") or "Xvfb",
             x11vnc=os.environ.get("UBER_LOGIN_X11VNC") or "x11vnc",
-            browser=stand_in,
         )
-        global LOGINS
-        LOGINS = logins
+        global WINDOWS
+        WINDOWS = windows
         novnc = Path(os.environ.get("UBER_LOGIN_NOVNC") or "/opt/novnc")
-        await serve(build_app(logins, token=LOGIN_TOKEN, novnc_dir=novnc), login_port)
+        await serve(build_app(windows, token=LOGIN_TOKEN, novnc_dir=novnc), login_port)
 
         base = f"http://127.0.0.1:{mcp_port}/uber"
         settings = Settings.from_env(
@@ -181,10 +182,10 @@ async def main() -> int:
 
         await page.close(run_before_unload=True)  # pagehide sends the cancel
         for _ in range(300):  # closing ends Chromium, x11vnc and Xvfb, which can take a few seconds
-            if not logins._logins:
+            if not open_windows(windows):
                 break
             await asyncio.sleep(0.1)
-        if logins._logins:
+        if open_windows(windows):
             print("FAIL: closing the page did not close the sign-in window", file=sys.stderr)
             return 1
         print("closing the page closed the sign-in window")
@@ -193,15 +194,19 @@ async def main() -> int:
     return 0
 
 
+def open_windows(windows: Windows) -> list[Window]:
+    return [w for w in list(windows._windows.values()) if w.state in ("starting", "waiting")]
+
+
 async def run() -> int:
     try:
         return await main()
     finally:
-        for login_id in list(LOGINS._logins) if LOGINS else []:
-            await LOGINS.close(login_id)  # never leave a display or browser behind
+        if WINDOWS is not None:
+            await WINDOWS.close_all()  # never leave a display or browser behind
 
 
-LOGINS: Logins | None = None
+WINDOWS: Windows | None = None
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(run()))

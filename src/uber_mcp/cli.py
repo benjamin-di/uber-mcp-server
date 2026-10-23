@@ -283,7 +283,7 @@ def _admin_account(settings: Settings, options: argparse.Namespace) -> int:
 
 
 def _admin_login(settings: Settings, layout: str, minutes: int) -> int:
-    from .login_client import LoginClient, LoginUnavailable
+    from signin_window.client import LoginClient, LoginUnavailable
 
     if not settings.login_url or not settings.login_token:
         print("uber-mcp: UBER_LOGIN_URL and UBER_LOGIN_TOKEN are not set (no login service).", file=sys.stderr)
@@ -306,7 +306,7 @@ def _admin_login(settings: Settings, layout: str, minutes: int) -> int:
                     print("uber-mcp: the sign-in finished but its session was already taken.", file=sys.stderr)
                     return 1
                 return _save(settings, result)
-            if state in ("failed", "expired", "closed", "unknown"):
+            if state in ("failed", "expired", "closed", "cancelled", "busy", "unknown"):
                 print(f"uber-mcp: the sign-in ended without a session ({state}).", file=sys.stderr)
                 return 1
             time.sleep(2)

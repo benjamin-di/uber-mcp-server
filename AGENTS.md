@@ -22,7 +22,7 @@ operation the way [docs/uber-web-api.md](docs/uber-web-api.md) describes. Fixtur
 ## Boundaries
 
 - `tests/test_safety.py` is the safety boundary: a new Uber host, a new GraphQL operation (read or money), a network
-  import outside `uber.py` and `login_client.py` (and `cli.py`'s local health check), or a money operation named or
+  import outside `uber.py` (and `cli.py`'s local health check), or a money operation named or
   sent anywhere but `booking.py` is a deliberate change there, never a side effect. `uber_request_ride` and
   `uber_cancel_ride` are the only destructive tools; `uber_connect` (a sign-in link, nothing at Uber) is the only
   other tool not marked read-only.
@@ -37,8 +37,10 @@ operation the way [docs/uber-web-api.md](docs/uber-web-api.md) describes. Fixtur
   API needs its bearer and the person's view needs its per-sign-in token.
 - Sign-in links (`connect.py`, `tests/test_connect.py`): a link is made only for the caller's own account, works once
   and for a short time, and can only put a session into that account (never show, return or read one); a session for
-  a different rider than the account already has, or one another account holds, is refused. The paste add-on
-  (`paste.js`) types what the person pastes on their own page; it never logs or keeps the text.
+  a different rider than the account already has, or one another account holds, is refused. The links, their page,
+  the live view, the paste add-on and the login service's windows come from
+  [signin-window](https://github.com/benjamin-di/signin-window): fix them there, not here; this repository holds
+  Uber's window (`uber_login/window.py`) and what a sign-in does to an account (`connect.py`).
 - Tool results never carry exception text or cookies; errors use the fixed `NEXT_STEP` table in `errors.py`. Logs
   never carry tool arguments (places), cookie values or Uber's error text.
 - `operations.json` holds Uber's own GraphQL documents, refreshed with `scripts/sync-operations.py`; never hand-write

@@ -27,6 +27,7 @@ from fastmcp.server.dependencies import get_access_token, get_http_request
 from fastmcp.server.middleware import Middleware
 from pydantic import Field
 from pydantic import ValidationError as PydanticValidationError
+from signin_window.client import LoginClient
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount
@@ -38,7 +39,6 @@ from .booking import Booking, Ledger
 from .config import Settings
 from .connect import ConnectFlow
 from .errors import AGENT_INPUT_CODES, DECISION_CODES, UberError
-from .login_client import LoginClient
 from .logs import ToolCallLog
 from .places import Places, view
 from .session import Session

@@ -14,9 +14,8 @@ reasons behind them.
 | `booking.py` | The only sender of `TripRequest` and `TripCancel`: previews, confirm tokens, the price ceiling, caps, freeze and the audit log (`Ledger`). |
 | `places.py`, `rides.py`, `trips.py`, `account.py` | Turning tool arguments into Uber's inputs and Uber's answers into tool results. |
 | `state.py`, `fsio.py` | State shared by processes: budget, pause, unresolved errors, canary results; atomic writes and file locks. |
-| `uber_login/` | The sign-in window (`window.py`, also used by `uber-mcp login`) and the login service for servers (`app.py`, `logins.py`). |
-| `login_client.py` | The server's only way to the login service (`uber-mcp admin login`, sign-in links). |
-| `connect.py`, `paste.js` | Sign-in links (`uber_connect`): the page, its calls, noVNC's files and the live view relayed from the login service; the paste add-on for noVNC's viewer. |
+| `uber_login/` | The sign-in window (`window.py`, also used by `uber-mcp login`) and the login service for servers (`app.py`: [signin-window](https://github.com/benjamin-di/signin-window)'s service running Uber's window). |
+| `connect.py` | Sign-in links (`uber_connect`) on signin-window's relay (the page, its calls, noVNC's files, the live view and the paste add-on): Uber's wording, and what a proven sign-in does to the link's account. |
 
 ## Decisions
 

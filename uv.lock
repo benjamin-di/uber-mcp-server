@@ -1345,6 +1345,20 @@ wheels = [
 ]
 
 [[package]]
+name = "signin-window"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "starlette" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d8/64/506e3aa71184258046670dd90d579b55272c2bf750aeeaa41e79eb9ae7fd/signin_window-0.1.2.tar.gz", hash = "sha256:8142a3ddd3ed4ecf62741bbaef44d322b53b3307fed5e94df57df50934cdee55", size = 84657, upload-time = "2026-10-23T05:12:59.454Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/f3/1beef023b06c85cb39922d549feca3542be6c500f67968e463d637657ba3/signin_window-0.1.2-py3-none-any.whl", hash = "sha256:05a142b67953464812b4d96a25c857b83752d08ea25e2281f11a6f6539c0fe95", size = 34807, upload-time = "2026-10-23T05:12:57.762Z" },
+]
+
+[[package]]
 name = "sse-starlette"
 version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1402,12 +1416,13 @@ wheels = [
 
 [[package]]
 name = "uber-mcp"
-version = "0.3.7"
+version = "0.3.13"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "fastmcp" },
     { name = "platformdirs" },
+    { name = "signin-window" },
 ]
 
 [package.optional-dependencies]
@@ -1427,6 +1442,7 @@ requires-dist = [
     { name = "fastmcp", specifier = "==4.0.10" },
     { name = "patchright", marker = "extra == 'login'", specifier = "==1.61.2" },
     { name = "platformdirs", specifier = ">=4.3" },
+    { name = "signin-window", specifier = ">=0.1.2,<0.2" },
 ]
 provides-extras = ["login"]
 

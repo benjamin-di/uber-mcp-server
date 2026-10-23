@@ -37,17 +37,16 @@ def test_the_window_shows_only_uber_google_or_apple():
 
 
 def test_the_view_needs_its_own_token_and_the_api_the_bearer():
+    """The service is signin-window's (tested there); this checks uber-login wires it with its bearer."""
+    from signin_window.service import Windows, build_app
     from starlette.testclient import TestClient
 
-    from uber_login.app import build_app
-    from uber_login.logins import Logins
+    async def browser(window):  # never starts a real browser
+        window.waiting("auth.uber.com")
 
-    async def browser(login, logins):  # never starts a real browser
-        login.state = "waiting"
-
-    logins = Logins(slots=1, browser=browser, xvfb="true", x11vnc="sleep")
-    logins._start_display = lambda login: None  # type: ignore[method-assign]
-    client = TestClient(build_app(logins, token="t" * 40, novnc_dir=Path("/nonexistent")))
+    windows = Windows(browser, slots=1, xvfb="true", x11vnc="sleep")
+    windows.start_display = lambda window: None  # type: ignore[method-assign]
+    client = TestClient(build_app(windows, token="t" * 40, novnc_dir=Path("/nonexistent")))
     assert client.get("/health").status_code == 200
     assert client.post("/logins", json={}).status_code == 401
     started = client.post("/logins", json={}, headers={"Authorization": "Bearer " + "t" * 40}).json()
@@ -57,3 +56,27 @@ def test_the_view_needs_its_own_token_and_the_api_the_bearer():
     assert client.get(f"/view/{started['id']}?t={started['view_token']}").status_code == 200
     assert client.get(f"/logins/{started['id']}").status_code == 401
     assert client.post(f"/logins/{started['id']}/result").status_code == 401
+
+
+def test_the_runner_opens_ubers_page_on_the_windows_display():
+    import asyncio
+
+    from signin_window.service import Window
+
+    from uber_login import app
+
+    seen = {}
+
+    async def sign_in(**kwargs):
+        seen.update(kwargs)
+        kwargs["on_page"]("auth.uber.com")
+        return {"account": {"uuid": "u"}, "cookies": []}
+
+    window = Window("w" * 24, "phone", 2, 0.0, 60.0)
+    original, app.sign_in = app.sign_in, sign_in
+    try:
+        assert asyncio.run(app.run_browser(window)) == {"account": {"uuid": "u"}, "cookies": []}
+    finally:
+        app.sign_in = original
+    assert seen["env"]["DISPLAY"] == ":92" and seen["layout"] == "phone" and seen["profile"] in window.profiles
+    assert window.state == "waiting" and window.host == "auth.uber.com"
