@@ -11,79 +11,106 @@ import re
 from typing import Any
 
 NEXT_STEP: dict[str, str] = {
-    "invalid_argument": "Fix the arguments and call again.",
+    "invalid_argument": ("Fix the arguments and call again."),
     "not_signed_in": (
-        "No Uber account is signed in yet. Call uber_connect: on a server that offers it, it gives a one-time link "
-        "where the person signs in to Uber themselves; give them the link. Otherwise ask the person to run "
-        '`uber-mcp login` on the computer this server runs on, or the operator to start a sign-in (README "Signing '
-        'in").'
+        "No Uber account is signed in yet. Call uber_connect: on a server that offers it, it "
+        "gives a one-time link where the person signs in to Uber themselves; give them the "
+        "link. Otherwise ask the person to run `uber-mcp login` on the computer this server "
+        'runs on, or the operator to start a sign-in (README "Signing in").'
     ),
     "session_expired": (
-        "Uber ended the sign-in. Call uber_connect for a one-time sign-in link and give it to the person (or, where "
-        "it is not offered, ask them to run `uber-mcp login` or the operator to sign them in). Do not retry until "
-        "uber_status shows signed_in true."
+        "Uber ended the sign-in. Call uber_connect for a one-time sign-in link and give it to "
+        "the person (or, where it is not offered, ask them to run `uber-mcp login` or the "
+        "operator to sign them in). Do not retry until uber_status shows signed_in true."
     ),
     "session_invalid": (
-        "The saved Uber session cannot be read (damaged, or saved under another key). Ask the person to sign in "
-        "again; tell the operator if it repeats."
+        "The saved Uber session cannot be read (damaged, or saved under another key). Ask the "
+        "person to sign in again; tell the operator if it repeats."
     ),
-    "blocked": "Uber pushed back. No Uber calls until the pause ends (uber_status shows when). Do not retry now.",
-    "budget_exhausted": "Today's Uber request budget is spent. It resets at 00:00 UTC (uber_status shows the use).",
-    "busy": "Another Uber request is still running. Retry in a few seconds.",
-    "upstream_error": "Uber or the network failed. Retry once in a minute.",
+    "blocked": ("Uber pushed back. No Uber calls until the pause ends (uber_status shows when). Do not retry now."),
+    "budget_exhausted": ("Today's Uber request budget is spent. It resets at 00:00 UTC (uber_status shows the use)."),
+    "busy": ("Another Uber request is still running. Retry in a few seconds."),
+    "upstream_error": ("Uber or the network failed. Retry once in a minute."),
     "schema_changed": (
-        'Uber\'s web API changed and this server cannot read it. Tell the operator (README "Troubleshooting"); '
-        "other tools may still work."
+        "Uber's web API changed and this server cannot read it. Tell the operator (README "
+        '"Troubleshooting"); other tools may still work.'
     ),
     "place_not_found": (
-        "Uber found no place for this. Make it more specific (add the district, street or city), or pass a saved "
-        "place's label, a place id from uber_places, or 'lat,lng'."
+        "Uber found no place for this. Make it more specific (add the district, street or "
+        "city), or pass a saved place's label, a place id from uber_places, or 'lat,lng'."
     ),
-    "no_rides": "Uber offers no rides for this trip right now. Try again in a few minutes or from another pickup.",
+    "no_rides": ("Uber offers no rides for this trip right now. Try again in a few minutes or from another pickup."),
     "option_not_found": (
-        "That ride option is not offered for this trip right now. Call uber_ride_options and use one of its "
-        "options' ids or names."
+        "That ride option is not offered for this trip right now. Call uber_ride_options and "
+        "use one of its options' ids or names."
     ),
-    "payment_not_found": "No payment method on the account matches. uber_account lists them; pass one's id or name.",
+    "payment_not_found": ("No payment method on the account matches. uber_account lists them; pass one's id or name."),
     "booking_disabled": (
-        "Booking is off on this server (no fare caps are configured, or the operator froze it). Nothing was "
-        "booked. The person can book in the Uber app."
+        "Booking is off on this server (no fare caps are configured, or the operator froze "
+        "it). Nothing was booked. The person can book in the Uber app."
     ),
     "over_cap": (
-        "The fare is above this server's cap (per ride, or today's total). Nothing was booked. Tell the person; "
-        "they can book in the Uber app."
+        "The fare is above this server's cap (per ride, or today's total). Nothing was "
+        "booked. Tell the person; they can book in the Uber app."
     ),
     "price_rose": (
-        "The price went up since the preview. Nothing was booked. The result holds a fresh preview: show it to the "
-        "person and confirm only after they agree to the new price."
+        "The price went up. Nothing was booked. Review the fresh preview if provided, otherwise request a new "
+        "preview. Confirm only after the person approves its price."
     ),
     "confirm_invalid": (
-        "That confirm token is unknown, already used, expired or for another ride. Nothing was booked. Call again "
-        "without confirm for a fresh preview and ask the person."
+        "That confirm token is unknown, already used, expired or for another ride. Nothing "
+        "was booked. Call again without confirm for a fresh preview and ask the person."
     ),
     "trip_active": (
-        "A ride is already active on this account. Check uber_ride_status; it must end or be cancelled before "
-        "another one is requested."
+        "A ride is already active on this account. Check uber_ride_status; it must end or be "
+        "cancelled before another one is requested."
     ),
-    "no_active_trip": "There is no active ride on this account. uber_ride_status shows the current state.",
-    "uber_refused": "Uber did not accept the request; nothing was booked. The person can try in the Uber app.",
+    "no_active_trip": ("There is no active ride on this account. uber_ride_status shows the current state."),
+    "uber_refused": ("Uber did not accept the request; nothing was booked. The person can try in the Uber app."),
     "outcome_unknown": (
-        "The request was sent but Uber's answer could not be read. Call uber_ride_status before anything else; "
-        "never repeat the request blindly."
+        "Uber may have accepted the action. Never repeat it blindly. For immediate rides "
+        "check uber_ride_status. For reservations check uber_trips and uber_reservation, then "
+        "ask the operator to resolve any durable attempt before booking again."
     ),
-    "internal_error": "uber-mcp failed unexpectedly. Retry once; if it repeats, tell the operator.",
+    "internal_error": ("uber-mcp failed unexpectedly. Retry once; if it repeats, tell the operator."),
     "account_not_connected": (
-        "This person has no Uber account on this server yet. Nothing was done. Tell them to ask the operator to add "
-        'their account (README "Accounts"); once it is added, uber_connect gives them a link to sign in to Uber '
-        "themselves. Do not retry until then."
+        "This person has no Uber account on this server yet. Nothing was done. Tell them to "
+        'ask the operator to add their account (README "Accounts"); once it is added, '
+        "uber_connect gives them a link to sign in to Uber themselves. Do not retry until "
+        "then."
     ),
     "connect_unavailable": (
-        "This server does not offer sign-in links. Ask the person to run `uber-mcp login` on the computer this server "
-        'runs on, or the operator to sign them in (README "Signing in").'
+        "This server does not offer sign-in links. Ask the person to run `uber-mcp login` on "
+        'the computer this server runs on, or the operator to sign them in (README "Signing '
+        'in").'
     ),
     "connect_limited": (
-        "Too many sign-in links were made for this account in the last hour. Give the person the newest link, or "
-        "try again later."
+        "Too many sign-in links were made for this account in the last hour. Give the person "
+        "the newest link, or try again later."
+    ),
+    "reservation_unavailable": (
+        "Native Reserve is unavailable for this pickup, time or product, or its terms cannot "
+        "be verified. Use Uber's app."
+    ),
+    "pickup_time_unavailable": (
+        "The pickup is outside Uber's current booking window. Choose another time and preview again."
+    ),
+    "reservation_not_found": (
+        "Uber did not return that reservation on this account. Check upcoming trips in Uber; "
+        "absence is not proof of cancellation."
+    ),
+    "reservation_conflict": (
+        "A reservation already exists near this pickup time. Review upcoming trips before booking another."
+    ),
+    "terms_changed": (
+        "The booking or cancellation terms changed. Nothing was submitted. Preview again and "
+        "obtain approval of the new terms."
+    ),
+    "cancellation_terms_unavailable": (
+        "The cancellation fee cannot be verified. Nothing was cancelled. Check this reservation in Uber's app."
+    ),
+    "booking_state_invalid": (
+        "The booking ledger cannot be read safely. Booking is stopped; ask the operator to recover its state."
     ),
 }
 
@@ -92,7 +119,22 @@ AGENT_INPUT_CODES = frozenset(
     {"invalid_argument", "place_not_found", "option_not_found", "payment_not_found", "confirm_invalid"}
 )
 # Outcomes of the money tools that are answers, not service failures (status's last_error ignores them).
-DECISION_CODES = frozenset({"over_cap", "price_rose", "trip_active", "no_active_trip", "booking_disabled", "no_rides"})
+DECISION_CODES = frozenset(
+    {
+        "over_cap",
+        "price_rose",
+        "trip_active",
+        "no_active_trip",
+        "booking_disabled",
+        "no_rides",
+        "reservation_unavailable",
+        "pickup_time_unavailable",
+        "reservation_conflict",
+        "terms_changed",
+        "cancellation_terms_unavailable",
+        "reservation_not_found",
+    }
+)
 UBER_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,63}\Z")
 
 

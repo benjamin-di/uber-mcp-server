@@ -20,7 +20,8 @@ NETWORK_MODULES = {"urllib.request", "http.client", "socket", "httpx", "requests
 def test_hosts_and_operations_are_pinned():
     assert {"m.uber.com", "riders.uber.com"} == uber.HOSTS
     assert set(uber.READ_OPERATIONS) == {
-        "Activities", "CurrentUserRidersWeb", "GetArrears", "GetTrip", "CancellationInformation", "GetStatus",
+        "Activities", "DateTimeReservationData", "GetReservation",
+        "CurrentUserRidersWeb", "GetArrears", "GetTrip", "CancellationInformation", "GetStatus",
         "Products", "PudoLocationSearch", "PudoResolveLocationPudoFragment", "RiderCompletedTripsCount", "SavedPlaces",
     }  # fmt: skip
     assert uber.MONEY_OPERATIONS == {"TripRequest": "rides", "TripCancel": "rides"}
@@ -88,11 +89,17 @@ def test_money_tools_are_marked_destructive(service):
     from uber_mcp.server import create_server
 
     tools = {t.name: t for t in asyncio.run(create_server(service).list_tools())}
-    for name in ("uber_request_ride", "uber_cancel_ride"):
+    for name in ("uber_request_ride", "uber_cancel_ride", "uber_reserve_ride", "uber_cancel_reservation"):
         assert tools[name].annotations.destructive_hint is True and tools[name].annotations.read_only_hint is False
     # uber_connect makes a sign-in link (state on this server, nothing at Uber): not read-only, never destructive.
     link = tools["uber_connect"].annotations
     assert link.read_only_hint is False and link.destructive_hint is False and link.open_world_hint is False
     for name, tool in tools.items():
-        if name not in ("uber_request_ride", "uber_cancel_ride", "uber_connect"):
+        if name not in (
+            "uber_request_ride",
+            "uber_cancel_ride",
+            "uber_reserve_ride",
+            "uber_cancel_reservation",
+            "uber_connect",
+        ):
             assert tool.annotations.read_only_hint is True, name

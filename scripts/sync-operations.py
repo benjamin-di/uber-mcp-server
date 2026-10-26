@@ -27,6 +27,8 @@ OUT = ROOT / "src" / "uber_mcp" / "operations.json"
 PAGES = ["https://m.uber.com/go/home", "https://riders.uber.com/trips"]
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36"
 WANTED = [
+    "DateTimeReservationData",
+    "GetReservation",
     "Activities",
     "CancellationInformation",
     "CurrentUserRidersWeb",

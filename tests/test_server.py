@@ -17,6 +17,7 @@ from uber_mcp.server import create_server
 TOOLS = {
     "uber_places", "uber_ride_options", "uber_request_ride", "uber_ride_status", "uber_cancel_ride", "uber_trips",
     "uber_trip", "uber_account", "uber_status", "uber_connect",
+    "uber_reserve_ride", "uber_reservation", "uber_cancel_reservation",
 }  # fmt: skip
 
 

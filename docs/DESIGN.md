@@ -33,10 +33,10 @@ reasons behind them.
 | The 24-hour spend is a local ledger (`booking.json`) of rides booked through this server, cancelled ones included | It is the server's own spending that the cap limits; a cancellation can still cost a fee, and keeping the approved price is the safe side. |
 | One ride at a time (`GetStatus` before a preview and before a confirm) | A second request while a car is coming is almost always a mistake, and a confirm must not book on top of a ride that started meanwhile. |
 | A lost answer to a money call is `outcome_unknown`, never retried | `TripRequest` is not idempotent: a retry can send two cars. The assistant reads `uber_ride_status` instead. Failures that prove nothing was sent (budget, pause, busy, no session) keep their own codes. |
-| Reserve-only options cannot be requested | Scheduled rides use a different request flow and confirmation; they stay in the Uber app. |
+| Native Reserve uses a distinct preview/confirmation tool | Future quotes, pickup-local wall time, reservation terms and durable uncertainty need checks beyond on-demand booking. Approval confirms only the stored proposal. |
 | A freeze switch in the ledger, set only by `uber-mcp admin freeze`; cancelling still works | An operator's stop that needs no restart, that no tool can lift, and that drops every pending preview. Stopping a ride must stay possible when booking is stopped. |
 | An append-only `audit.jsonl` of every money attempt, without places | Who booked what at which price must be answerable afterwards, without keeping a location history. |
-| One rider per server; over HTTP every bearer acts for that rider | No tool argument names an account, so no prompt can reach another one. Several bearers exist only to rotate them. |
+| One caller account per operation, selected only by the trusted proxy | No tool argument names an account; sessions, approvals and reservation attempts stay within the account's state directory. Several backend bearers exist only to rotate them. |
 | One session file, held in memory, re-read when it changes (inode, mtime, size) | Each MCP client on a computer starts its own server process; a sign-in in any of them, or by `uber-mcp login`, reaches all of them with their next call. |
 | Each sign-in raises the generation; renewed cookies are written back under a lock to the same generation only | Uber renews `jwt-session` (about a day) on reads, so the file must follow or the next process starts stale. A write-back from an older process never overwrites a newer sign-in. |
 | Sealed with AES-GCM under `UBER_SESSION_KEY` (`session.bin`), otherwise `session.json` readable only by its owner | On a server the state volume may be backed up or copied; the key lives elsewhere. On a person's own computer a file mode is the usual protection and needs no key to manage. |
@@ -58,8 +58,9 @@ reasons behind them.
 
 ## Not tested, and why
 
-- Requesting or cancelling a real ride: it costs money and sends a driver. `tests/test_booking.py` pins the flow
-  against the fake, with the request shape Uber's web app sends.
+- Automated tests never request or cancel real rides. They pin the protocol against synthetic fakes. Native Reserve
+  has also had an explicitly authorized creation/retrieval/no-charge-cancellation acceptance; this does not qualify
+  every product or market, nor driver assignment, dispatch or journey completion.
 - Rate limits under bursts: probing them would risk the account.
 - Prompt injection through place names, driver names or trip descriptions: content cannot be planted. Mitigated by
   the instructions, by treating Uber's text as data, and by money tools that act only on a token the person approved.

@@ -37,6 +37,8 @@ ENDPOINTS = {"rides": "https://m.uber.com/go/graphql", "riders": "https://riders
 HOSTS = frozenset(urllib.parse.urlsplit(url).hostname for url in ENDPOINTS.values())
 # Every operation this server can send, and where; tests/test_safety.py pins both sets.
 READ_OPERATIONS = {
+    "DateTimeReservationData": "rides",
+    "GetReservation": "rides",
     "Activities": "riders",
     "CurrentUserRidersWeb": "riders",
     "GetArrears": "riders",

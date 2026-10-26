@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from .errors import UberError
 from .uber import Uber
@@ -13,8 +14,16 @@ CURSOR = re.compile(r"[A-Za-z0-9_=+/:.-]{1,2000}\Z")
 
 
 def _activity(a: dict[str, Any]) -> dict[str, Any]:
+    link = urlsplit(a.get("cardURL") or "")
+    match = re.search(r"/reserved/([0-9a-fA-F-]{36})(?:/|$)", link.path)
+    rid = (
+        match[1]
+        if match and TRIP_ID.fullmatch(match[1]) and link.hostname in {"m.uber.com", "riders.uber.com"}
+        else None
+    )
     return {k: v for k, v in {
         "id": a.get("uuid"),
+        "reservation_id": rid,
         "to": a.get("title"),
         "when": a.get("subtitle"),
         "fare": a.get("description"),

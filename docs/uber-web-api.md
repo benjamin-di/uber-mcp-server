@@ -123,3 +123,37 @@ writes them minified to `operations.json` with the date. It fails, naming them, 
   Google, Apple or a QR code, behind Uber's bot checks) and back to `m.uber.com/go/...`.
 - A phone-sized window gets Uber's mobile pages only with a mobile browser identity (`User-Agent`).
 - The cookies of that browser work over plain HTTP with its `User-Agent`; the session file keeps both.
+
+## Native Reserve
+
+The rider web app quotes native Reserve with `Products(targetProductType: RESERVE, pickupFormattedTime: ...)`.
+`pickupFormattedTime` is a pickup-local `yyyy-MM-ddTHH:mm:ss` string without an offset. The application separately
+turns that wall time into an instant using the pickup's time zone for `TripRequest.pickupTimeMsec` (milliseconds).
+The server requires the caller's explicit offset and IANA zone to agree before deriving either representation.
+Repeated daylight-saving wall times are rejected because this quote input cannot unambiguously encode the fold.
+
+`DateTimeReservationData(coordinate)` returns `dateTimeReservationData.type`, `bookingRange.minimum` and
+`maximum` (seconds ahead), and `terms.{title,content}`. Only `type: RESERVE` is supported. Recheck this and the product
+at confirmation; `reserveEnabled` and availability belong to the selected product. Upfront metadata is sent back
+unchanged. The creation mutation is the existing `TripRequest`, with `type: RESERVE` and `pickupTimeMsec`; its `uuid`
+is the reservation UUID. No verified client-supplied idempotency key appears in this flow. A lost reply cannot be
+safely retried, and quote metadata must not be treated as a deduplication key.
+
+`GetReservation(reservationUUID)` on the rides GraphQL endpoint returns `getReservation.reservation`:
+`reservationUUID`, `jobUUID` (different identifiers), `reservationStatus`, `isUberReserve`, `pickupLocation`,
+`destinationLocation`, `targetPickupTimeMS`, `pickupTimeWithTimezone.{isoString,timezoneID}`, `upfrontFare`,
+`fareEstimate`, `vehicleView`, driver data and reservation messages. `ACTIVE` is a reservation state; it does not
+imply a driver is assigned. A cancelled reservation can remain readable with `reservationStatus: CANCELED`.
+A missing UUID can produce an upstream error instead of a null result; neither proves cancellation.
+
+The website's cancellation preview calls `CancellationInformation` with `tripUUID: jobUUID`,
+`reservationUUID: reservationUUID` and the pickup location. `chargeFee` can be a boolean: `false` explicitly means
+no charge; preserve it rather than dropping falsy values. Show the returned title/messages too. The cancellation
+mutation instead uses `TripCancel(current: false, uuid: reservationUUID)`. A `true` response acknowledges cancellation;
+read the reservation again to distinguish confirmed cancellation from unavailable verification. Upcoming activity
+IDs can be job IDs: extract the reservation UUID from Uber's `/reserved/<uuid>` link rather than substituting them.
+
+Protocol shapes were checked against the rider web application's documents and call sites. Native creation,
+independent retrieval, a no-charge cancellation preview, cancellation acknowledgement and subsequent `CANCELED`
+status were verified during an explicitly authorized bounded acceptance. No account data or recorded payload from
+that acceptance is included here. Further market/product behavior remains conditional on Uber's returned support.

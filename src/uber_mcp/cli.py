@@ -64,6 +64,13 @@ def main(argv: list[str] | None = None) -> int:
     audit = admin_commands.add_parser("audit", help="the last booking attempts")
     audit.add_argument("-n", type=int, default=20)
     audit.add_argument("--account", help="an account id (default: the default account)")
+    reservation = admin_commands.add_parser("reservation", help="review or resolve uncertain reservations")
+    reservation.add_argument("action", choices=("list", "resolve"))
+    reservation.add_argument("attempt", nargs="?")
+    reservation.add_argument("--account")
+    resolution = reservation.add_mutually_exclusive_group()
+    resolution.add_argument("--reservation-id", help="bind a reservation independently checked in Uber")
+    resolution.add_argument("--not-booked", action="store_true", help="attest Uber did not accept this attempt")
     account = admin_commands.add_parser("account", help="more accounts on one server")
     account_commands = account.add_subparsers(dest="account_command", required=True)
     account_commands.add_parser("list", help="every account, signed in or not, with its caps")
@@ -232,6 +239,27 @@ def _admin(settings: Settings, options: argparse.Namespace) -> int:
     account = _account_settings(settings, options.account)
     if account is None:
         return 2
+    if options.admin == "reservation":
+        from .errors import UberError
+        from .server import UberService
+
+        service = UberService(account)
+        if options.action == "list":
+            print(json.dumps(service.ledger.attempts(), indent=2))
+            return 0
+        if not options.attempt or not (options.reservation_id or options.not_booked):
+            print(
+                "Specify an attempt and --reservation-id ID or --not-booked, after independently checking Uber.",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            service.booking.resolve_reservation(options.attempt, options.reservation_id)
+        except UberError as exc:
+            print(f"uber-mcp: {exc.code}", file=sys.stderr)
+            return 1
+        print("Attempt resolved. No booking or cancellation was submitted.")
+        return 0
     if options.admin == "audit":
         for entry in Ledger(account.state_dir).recent_audit(max(1, min(options.n, 500))):
             print(json.dumps(entry, ensure_ascii=False))

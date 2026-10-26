@@ -53,7 +53,7 @@ set them ([Booking safety](#booking-safety)).
 
 3. **To let it request rides**, set both caps in the server's environment, in your account's currency: the most one
    ride may cost and the most everything it books may cost in any 24 hours, for example
-   `claude mcp add uber -e UBER_MAX_FARE="USD 80" -e UBER_MAX_FARE_24H="USD 200" -- uvx ...`, or
+   `claude mcp add uber -e UBER_MAX_FARE="USD 80" -e UBER_MAX_FARE_24H="USD 200" -- uvx uber-mcp`, or
    `"env": { "UBER_MAX_FARE": "USD 80", "UBER_MAX_FARE_24H": "USD 200" }` beside `"args"` ([Booking
    safety](#booking-safety)).
 
@@ -68,7 +68,10 @@ These commands run the latest release from PyPI ([`uber-mcp`](https://pypi.org/p
 | Tool | What it does |
 |---|---|
 | `uber_places(query, near)` | No query: your saved places (Home and any you named, with their labels). With a query: Uber's place search around `near` (`lat,lng` or a saved place's label), else around Uber's guess of your position. Each place has an `id` (a Google place id), a name, an address and, for airports, the terminals per airline. |
-| `uber_ride_options(pickup, dropoff, payment)` | Every ride option Uber offers for the trip right now: name, tier, seats, live `price`, pickup ETA, arrival time and badges, with the pickup and drop-off as Uber matched them (`*_matched_by`, and `*_alternatives` for a free-text match), `quote_expires_at`, the payment method and the server's booking caps. Read-only. |
+| `uber_ride_options(pickup, dropoff, payment, pickup_at, timezone)` | Every ride option Uber offers for the trip right now: name, tier, seats, live `price`, pickup ETA, arrival time and badges, with the pickup and drop-off as Uber matched them (`*_matched_by`, and `*_alternatives` for a free-text match), `quote_expires_at`, the payment method and the server's booking caps. Read-only. |
+| `uber_reserve_ride(pickup, dropoff, option, pickup_at, timezone, payment, confirm)` | Preview a native future reservation; after approval, call again with **only** `confirm`. See [Reserve](#reserve-a-future-ride). |
+| `uber_reservation(id)` | Read Uber's reservation status, exact pickup time and zone, driver assignment and eventual trip ID. |
+| `uber_cancel_reservation(id, confirm)` | Preview the fee for this reservation; after approval, cancel with the same ID and token. |
 | `uber_request_ride(pickup, dropoff, option, payment, confirm)` | Without `confirm`: a preview (the ride, a fresh price, the places, the payment method, the caps) and a `confirm_token`; nothing is booked. With `confirm` (after the person's yes, same arguments): books it, unless the price rose or a cap would be passed. |
 | `uber_ride_status()` | The current ride: status and Uber's headline, driver (name, rating), car and plate, PIN, pickup ETA, arrival time, fare, whether it can still be cancelled, and the stops. Only `state` when there is none. |
 | `uber_cancel_ride(confirm)` | Without `confirm`: the ride and Uber's cancellation notice (any fee) with a `confirm_token`; nothing is cancelled. With `confirm`: cancels that ride. |
@@ -88,9 +91,68 @@ A price is `{"display": "...", "cents": 4250, "currency": "USD", "kind": "fixed"
 - `range`: a metered taxi. The meter decides the fare; `cents` is the range's high end and `low_cents` the low end.
 - `estimate`: neither of the above.
 
-Options marked `reserve_only` can only be booked ahead, in the Uber app. Caps and spend are
+Options marked `reserve_only` need a future Reserve quote before they can be booked. Caps and spend are
 `{"cents": 8000, "currency": "USD", "display": "USD 80.00"}`. Errors are `{"error": {code, next_step, retryable}}`,
 and the `next_step` text tells the assistant what to do ([Troubleshooting](#troubleshooting)).
+
+## Reserve a future ride
+
+Ask your assistant to reserve a ride for an exact pickup date and time, for example from `Example Hotel` to
+`Example Airport` at `2027-01-12T06:30:00+01:00`, time zone `Europe/Paris`. The assistant first calls
+`uber_ride_options` with both `pickup_at` and `timezone`, which returns Uber's **future Reserve quote**, available
+products and the current reservation terms. Without those arguments it still returns immediate fares.
+
+To book, `uber_reserve_ride` first takes the journey, product, exact pickup time, IANA time zone and optional payment
+and returns a preview. Nothing is booked. Review the full date, time, time zone, resolved locations, fare, payment
+and cancellation terms. After your approval, the assistant calls `uber_reserve_ride` with **only** its `confirm`
+token. The server rechecks eligibility, the stored payment, price, terms, caps and nearby reservations before sending
+Uber's native Reserve request. A changed price or policy requires a new preview and approval. No timer on this
+server dispatches the car: Uber holds the reservation even if this server is offline at pickup time.
+
+`uber_trips` includes upcoming trips and their `reservation_id` where Uber supplies a reservation link. Use
+`uber_reservation(id)` to read its authoritative status. Reservation acceptance and driver assignment are separate:
+a reservation does not guarantee a driver. To cancel, use `uber_cancel_reservation(id)` to preview the current fee,
+then the same ID and `confirm` token after approval. Unknown fees stop cancellation; changed fees or terms require
+another preview. Cancellation works while booking is frozen. Freezing does not cancel existing reservations.
+
+Booking uses the existing caps: the rolling 24-hour cap counts authorizations when they are made, including future
+reservations, rather than the day the journey takes place. Cancelled bookings still count. An uncertain submission
+keeps a financial hold even after 24 hours and prevents further booking on that account until resolved. The server
+never resubmits it automatically. `uber_status.booking` lists known reservations and unresolved attempt IDs.
+
+For reservations made here, the running server checks status every six hours, every 15 minutes within a day of
+pickup, and every five minutes within two hours. These checks share Uber's request budget and pause. Status records
+show the last observation and attention flags (unavailable status, failed reservation, or no driver assigned within
+30 minutes of pickup); these are observations, not a dispatch guarantee. Polling is coordinated across processes.
+If no terminal outcome is verified within 24 hours after pickup, automatic polling stops and status requires
+manual verification. No notification channel, reminder, calendar entry or replacement booking is created automatically. An operator may
+use these fields with their own notification system. App-created reservations can be read, but are not automatically
+registered for background monitoring.
+
+### Scope and recovery
+
+The first Reserve implementation supports a single destination, native Reserve, and products with an upfront
+quote. Airport drop-offs are supported where Uber offers them. Airport pickups, metered/estimated fares, third-party
+products, extra consent screens, recurring rides, flight tracking and reservation edits are not bookable through
+this flow. Booking windows and terms come from Uber; the server does not assume one worldwide cancellation policy.
+Ambiguous repeated daylight-saving hours are rejected because Uber's quote represents the pickup as offset-free
+local time. An existing reservation within one hour of the requested pickup blocks a new one as a conservative duplicate check;
+this is not a journey planner or a guarantee that more widely separated trips cannot overlap.
+
+A lost response or process crash can leave an uncertain attempt. Inspect Uber's upcoming trips independently before
+resolving it. The operator can list attempts and either bind a verified reservation with the same pickup instant or
+explicitly attest that no reservation was accepted:
+
+```sh
+uber-mcp admin reservation list
+uber-mcp admin reservation resolve ATTEMPT --reservation-id RESERVATION_UUID
+uber-mcp admin reservation resolve ATTEMPT --not-booked
+```
+
+These commands take `--account ID`. Resolution never submits a booking or cancellation. `--not-booked` releases the
+hold on the operator's explicit attestation; absence from a single list response is insufficient evidence. No
+exactly-once guarantee is claimed: the rider web flow exposes no verified client idempotency key. A corrupt ledger
+stops booking and needs operator recovery rather than silently resetting its financial history.
 
 ## Booking safety
 
@@ -120,7 +182,7 @@ by `tests/test_safety.py` and `tests/test_booking.py`:
 - **Audit log.** Every confirm, booked or not (refused with the reason, started, failed, refused by Uber, succeeded;
   cancels too), is appended to `audit.jsonl` with the product, the price and the trip id, never the places.
   `uber-mcp admin audit [-n N]` shows the latest.
-- **Only booking.** No endpoint for payment methods, tips, ratings, profiles, saved places, scheduled rides, Uber
+- **Only booking.** No endpoint for payment methods, tips, ratings, profiles, saved places, reservation edits, Uber
   Eats or account settings exists in the code.
 
 ## Other safety
@@ -145,7 +207,7 @@ Everything stays on the computer that runs the server, in its state folder (`~/.
 | `session.json` (or `session.bin`) | Your Uber sign-in (cookies), the browser identity it was made with, your account id and first name. **Treat it like a password.** With `UBER_SESSION_KEY` it is `session.bin`, sealed with AES-GCM. |
 | `browser/` | The sign-in window's browser profile (`uber-mcp login` only), so Uber recognises the browser next time. |
 | `state.json` | Today's request budget, any pause, unresolved errors, keep-alive and canary results. |
-| `booking.json` | Pending previews (for 10 minutes), the rides booked in the last 24 hours (price and trip id) and the freeze. |
+| `booking.json` | Pending previews (including resolved Reserve locations, payment and terms, for 10 minutes), booking authorizations, durable reservation attempts and financial holds, monitoring observations and the freeze. |
 | `audit.jsonl` | Every booking and cancellation attempt ([above](#booking-safety)). |
 | `accounts/<id>/` | Each further account ([Accounts](#accounts)): its own `session.bin`, `state.json` (its errors, keep-alive and canary), `booking.json`, `audit.jsonl`, and `account.json` with its caps. |
 
@@ -163,8 +225,8 @@ Google's or Apple's, for their sign-in buttons). Once Uber shows its rides page,
 once (it signs in there through Uber's own single sign-on), reads your account on both with the same cookies, saves
 the session and closes. A running server picks up the new session with its next call.
 
-- No Chrome? Run `uvx --from "uber-mcp[login]" patchright
-  install chromium`, then `uber-mcp login --browser chromium`.
+- No Chrome? Run `uvx --from "uber-mcp[login]" patchright install chromium`, then
+  `uvx --from "uber-mcp[login]" uber-mcp login --browser chromium`.
 - Uber decides how long a session lasts. The server reads both of Uber's sites every 4 hours
   (`UBER_KEEPALIVE_SECONDS`), which lets Uber renew its short-lived cookies; `uber_status` shows when each sign-in
   cookie expires. When the session ends, tools return `session_expired`: sign in again.

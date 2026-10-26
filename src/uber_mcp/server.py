@@ -32,7 +32,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount
 
-from . import __version__, accounts, rides, trips
+from . import __version__, accounts, reservations, rides, trips
 from .account import Account
 from .auth import BEARER_CLIENT, require_bearer
 from .booking import Booking, Ledger
@@ -74,7 +74,12 @@ top match is used and echoed back with alternatives: check it). Airports list th
 terminal's lat,lng to be set down there.
 
 Prices: price.kind "fixed" is Uber's upfront price, held for a few minutes; "range" is a metered taxi (the meter
-decides; Uber's amount is the high end); reserve_only options can only be booked ahead in the Uber app.
+decides; Uber's amount is the high end). For a future ride, uber_ride_options takes pickup_at (ISO timestamp with
+explicit offset) and timezone (the pickup's IANA zone). Only its native Reserve quotes apply to future rides.
+uber_reserve_ride previews a reservation; show the full pickup date/time/zone, route, fare, payment and terms, wait
+for approval, then call it with ONLY confirm=<token>. Uber holding a reservation does not guarantee a driver.
+uber_trips lists upcoming reservation_id values; uber_reservation reads status. uber_cancel_reservation previews
+fees and requires approval too. Never retry an unknown booking; check Uber and resolve the durable attempt first.
 
 Requesting a ride spends the person's money and sends a real car. Always:
 1. uber_ride_options to compare, then uber_request_ride without confirm: a preview only, nothing is booked.
@@ -153,12 +158,26 @@ class UberService:
         hits = self.places.search(query, self.places.near_point(near))
         return {"results": [view(h) for h in hits]}
 
-    def ride_options(self, pickup: str, dropoff: str, payment: str | None) -> dict[str, Any]:
+    def ride_options(
+        self, pickup: str, dropoff: str, payment: str | None, pickup_at: str | None = None, timezone: str | None = None
+    ) -> dict[str, Any]:
+        if (pickup_at is None) != (timezone is None):
+            raise UberError("invalid_argument", "pickup_at and timezone go together")
+        when = reservations.pickup_time(pickup_at, timezone) if pickup_at is not None else None
         pick_up = self.places.resolve(pickup, "PICKUP")
         start = pick_up["raw"]["coordinate"]
         drop_off = self.places.resolve(dropoff, "DROPOFF", {"latitude": start["latitude"],
                                                              "longitude": start["longitude"]})  # fmt: skip
         pay = self.account.payment(payment)
+        if when is not None:
+            quote = reservations.Reservations(self.uber).quote(pick_up["raw"], drop_off["raw"], pay, when)
+            return {
+                **rides.trip_view(pick_up["raw"], drop_off["raw"]),
+                **{k: v for k, v in quote.items() if k != "options"},
+                "options": [rides.public(o) for o in quote["options"]],
+                "payment": pay["method"]["name"],
+                "booking": self.booking.caps(),
+            }
         quoted_at = time.time()
         found = rides.options(
             self.uber.graphql("Products", rides.products_variables(pick_up["raw"], drop_off["raw"], pay)), quoted_at
@@ -188,6 +207,17 @@ class UberService:
 
     def trip_list(self, limit: int, cursor: str | None) -> dict[str, Any]:
         return trips.trips(self.uber, limit, cursor)
+
+    def reservation_details(self, value: str) -> dict[str, Any]:
+        return reservations.Reservations(self.uber).details(value)
+
+    def reserve_ride(
+        self, pickup=None, dropoff=None, option=None, pickup_at=None, timezone=None, payment=None, confirm=None
+    ):
+        return self.booking.reserve(pickup, dropoff, option, pickup_at, timezone, payment, confirm)
+
+    def cancel_reservation(self, value: str, confirm: str | None) -> dict[str, Any]:
+        return self.booking.cancel_reservation(value, confirm)
 
     def trip_details(self, trip_id: str) -> dict[str, Any]:
         return trips.trip(self.uber, trip_id)
@@ -226,6 +256,50 @@ class UberService:
             return False
         last = self.state.get("last_keepalive_at")
         return self.session.awaiting_verification() or last is None or now - last >= self.settings.keepalive_seconds
+
+    def monitor_reservations(self) -> None:
+        """Only known reservations, with a shared per-account polling claim. Never submits money operations."""
+        if self.session.never_signed_in():
+            return
+        now = time.time()
+        for key, record in self.ledger.attempts().items():
+            if record.get("status") != "accepted" or not record.get("reservation_id") or record.get("monitor_disabled"):
+                continue
+            target = reservations.pickup_time(record["pickup_at"], record["timezone"])["timestamp"]
+            remaining = target - now
+            if remaining < -86400:
+                self.ledger.update_attempt(key, attention="verification_required", monitor_disabled=True)
+                continue
+            interval = 300 if remaining < 7200 else 900 if remaining < 86400 else 21600
+
+            def claim(data, attempt=key, gap=interval):
+                current = data["reservation_attempts"][attempt]
+                if current.get("status") != "accepted" or now - current.get("last_checked_at", 0) < gap:
+                    return False
+                current["last_checked_at"] = now
+                return True
+
+            if not self.ledger._change(claim):
+                continue
+            try:
+                detail = reservations.Reservations(self.uber).details(record["reservation_id"])
+                attention = "driver_not_assigned" if remaining < 1800 and not detail["driver_assigned"] else None
+                updates = {
+                    "observed_status": detail["status"],
+                    "driver_assigned": detail["driver_assigned"],
+                    "attention": attention,
+                }
+                if detail["status"] in reservations.TERMINAL:
+                    updates.update(
+                        status=detail["status"],
+                        attention="reservation_failed"
+                        if detail["status"] in {"FAILED", "EXPIRED", "UNFULFILLED", "CANCELED", "CANCELLED"}
+                        and not record.get("cancellation_requested")
+                        else None,
+                    )
+                self.ledger.update_attempt(key, **updates)
+            except UberError as exc:
+                self.ledger.update_attempt(key, attention="status_unavailable", monitor_error=exc.code)
 
     def status(self, check: bool) -> dict[str, Any]:
         canary = self.canary() if check else None  # first: it may prove the session the status then reports
@@ -447,12 +521,19 @@ def create_server(target: UberService | Accounts, *, auth: Any = None, login: Lo
         payment: Annotated[
             str | None, Field(max_length=80, description="Payment method id or name (default: the app's choice)")
         ] = None,
+        pickup_at: Annotated[
+            str | None, Field(max_length=40, description="For Reserve: ISO timestamp with explicit UTC offset")
+        ] = None,
+        timezone: Annotated[
+            str | None, Field(max_length=80, description="For Reserve: pickup's IANA timezone, matching pickup_at")
+        ] = None,
     ) -> dict[str, Any]:
         """Every ride option Uber offers for this trip right now: name, tier, seats, live price (fixed upfront
         price, or a range for a metered taxi), pickup ETA and arrival time, with the pickup and drop-off as Uber
-        matched them (check them; free-text matches list alternatives). Read-only; requesting is
-        uber_request_ride."""
-        return await call("uber_ride_options", UberService.ride_options, pickup, dropoff, payment)
+        matched them (check them; free-text matches list alternatives). For a future pickup supply pickup_at AND
+        timezone: returns native Reserve prices and terms, never current fares. Read-only; use uber_request_ride
+        for now, uber_reserve_ride for future pickup."""
+        return await call("uber_ride_options", UberService.ride_options, pickup, dropoff, payment, pickup_at, timezone)
 
     @mcp.tool(title="Request a ride", annotations=MONEY)
     async def uber_request_ride(
@@ -475,6 +556,49 @@ def create_server(target: UberService | Accounts, *, auth: Any = None, login: Lo
         that preview, same arguments): books it, unless the price rose (a fresh preview comes back instead) or a
         cap would be passed. Sends a car and charges the payment method."""
         return await call("uber_request_ride", UberService.request_ride, pickup, dropoff, option, payment, confirm)
+
+    @mcp.tool(title="Reserve a future ride", annotations=MONEY)
+    async def uber_reserve_ride(
+        pickup: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
+        dropoff: Annotated[str | None, Field(min_length=1, max_length=200)] = None,
+        option: Annotated[str | None, Field(min_length=1, max_length=80)] = None,
+        pickup_at: Annotated[str | None, Field(max_length=40)] = None,
+        timezone: Annotated[str | None, Field(max_length=80)] = None,
+        payment: Annotated[str | None, Field(max_length=80)] = None,
+        confirm: Annotated[str | None, Field(max_length=40)] = None,
+    ) -> dict[str, Any]:
+        """Native Uber Reserve. First call: pickup, dropoff, option, exact ISO pickup_at with offset, IANA timezone,
+        optional payment. Returns a preview only. Show the full date/time/zone, route, fare, payment and terms and
+        wait for approval. Second call: ONLY confirm=<token>; submits that stored proposal after fresh checks.
+        Never retry an unknown outcome. Uber holding a reservation does not guarantee a driver. No flight tracking,
+        recurring rides, specialty products or automatic replacement bookings."""
+        return await call(
+            "uber_reserve_ride",
+            UberService.reserve_ride,
+            pickup,
+            dropoff,
+            option,
+            pickup_at,
+            timezone,
+            payment,
+            confirm,
+        )
+
+    @mcp.tool(title="Reservation details", annotations=READ)
+    async def uber_reservation(id: Annotated[str, Field(min_length=36, max_length=36)]) -> dict[str, Any]:
+        """Read a reservation by reservation_id (from booking or uber_trips.upcoming). Returns Uber's status,
+        pickup time/zone, driver assignment and trip ID. Missing data is not proof of cancellation."""
+        return await call("uber_reservation", UberService.reservation_details, id)
+
+    @mcp.tool(title="Cancel a reservation", annotations=MONEY)
+    async def uber_cancel_reservation(
+        id: Annotated[str, Field(min_length=36, max_length=36)],
+        confirm: Annotated[str | None, Field(max_length=40)] = None,
+    ) -> dict[str, Any]:
+        """Cancel a specific future reservation. Without confirm: preview the reservation and current cancellation
+        fee. After approval: same id and confirm token. Changed terms require a new preview; cancellation remains
+        available while booking is frozen. Never retry an unknown outcome without checking Uber."""
+        return await call("uber_cancel_reservation", UberService.cancel_reservation, id, confirm)
 
     @mcp.tool(title="Live ride", annotations=READ, meta=CORE)
     async def uber_ride_status() -> dict[str, Any]:
@@ -544,6 +668,7 @@ def _keepalive_round(registry: Accounts, failed: dict[str, float]) -> None:
                 failed[service.account_id] = service.state.now()
                 service.keepalive()
                 failed.pop(service.account_id, None)
+            service.monitor_reservations()
         except UberError as exc:
             log.warning("keep-alive failed: %s", exc.code)
         except Exception as exc:  # the loop must survive anything

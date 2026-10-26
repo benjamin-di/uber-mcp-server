@@ -23,15 +23,21 @@ operation the way [docs/uber-web-api.md](docs/uber-web-api.md) describes. Fixtur
 
 - `tests/test_safety.py` is the safety boundary: a new Uber host, a new GraphQL operation (read or money), a network
   import outside `uber.py` (and `cli.py`'s local health check), or a money operation named or
-  sent anywhere but `booking.py` is a deliberate change there, never a side effect. `uber_request_ride` and
-  `uber_cancel_ride` are the only destructive tools; `uber_connect` (a sign-in link, nothing at Uber) is the only
+  sent anywhere but `booking.py` is a deliberate change there, never a side effect. `uber_request_ride`,
+  `uber_cancel_ride`, `uber_reserve_ride` and `uber_cancel_reservation` are the only destructive tools; `uber_connect` (a sign-in link, nothing at Uber) is the only
   other tool not marked read-only.
 - **Booking lives only in `booking.py`.** `TripRequest` and `TripCancel` go out only through
   `Uber.graphql(..., money=True)` from there, and only after a preview, a single-use confirm token bound to the
   preview's arguments, a fresh price no higher than the approved one, both caps, the freeze check and the
   one-ride-at-a-time check, with every attempt in `audit.jsonl`. Weakening any of these, or adding a way to book
   around them (scheduled rides, tips, other payment flows), is a design change: argue it in the pull request.
-- An outcome that may have reached Uber is `outcome_unknown`, never retried by the server.
+- Reserve uses native `TripRequest(type=RESERVE, pickupTimeMsec=...)`, immutable stored approvals, exact payment
+  binding, market-returned terms and the same caps. `TripCancel(current=False, uuid=reservationUUID)` cancels it;
+  its fee lookup uses the separate `jobUUID`. Never interchange those IDs. Native operations are documented in
+  `docs/uber-web-api.md`; new money flows need explicit design and safety-test changes.
+- An outcome that may have reached Uber is `outcome_unknown`, never retried by the server. Reserve attempts persist
+  before submission and hold their authorization until a verified result or explicit operator resolution. Monetary
+  actions serialize per account across processes. Background reservation monitoring is read-only.
 - `tests/test_login_safety.py`: the sign-in window shows only Uber's pages (and Google's or Apple's sign-in) and
   automates nothing on them: no click, keystroke, fill or form call exists in `src/uber_login`. The login service's
   API needs its bearer and the person's view needs its per-sign-in token.
@@ -46,7 +52,8 @@ operation the way [docs/uber-web-api.md](docs/uber-web-api.md) describes. Fixtur
 - `operations.json` holds Uber's own GraphQL documents, refreshed with `scripts/sync-operations.py`; never hand-write
   a document Uber's web apps do not send.
 - Live checks against Uber: only your own account, a handful of paced read-only calls, nothing they return is
-  committed. Never request or cancel a ride in a check, test or experiment, and never with someone else's account.
+  committed. Never request or cancel a ride in an automated check or experiment without explicit owner authorization of the
+  booking and cleanup scope; verify current charges and cancellation terms first. Never use someone else's account.
 
 ## Releases
 
