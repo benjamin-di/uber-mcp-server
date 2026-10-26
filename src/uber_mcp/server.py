@@ -205,8 +205,10 @@ class UberService:
             raise UberError("schema_changed", log_detail="status not an object")
         return rides.status_view(status)
 
-    def trip_list(self, limit: int, cursor: str | None) -> dict[str, Any]:
-        return trips.trips(self.uber, limit, cursor)
+    def trip_list(
+        self, limit: int, cursor: str | None, include_details: bool = False, timezone: str | None = None
+    ) -> dict[str, Any]:
+        return trips.trips(self.uber, limit, cursor, include_details, timezone)
 
     def reservation_details(self, value: str) -> dict[str, Any]:
         return reservations.Reservations(self.uber).details(value)
@@ -219,8 +221,8 @@ class UberService:
     def cancel_reservation(self, value: str, confirm: str | None) -> dict[str, Any]:
         return self.booking.cancel_reservation(value, confirm)
 
-    def trip_details(self, trip_id: str) -> dict[str, Any]:
-        return trips.trip(self.uber, trip_id)
+    def trip_details(self, trip_id: str, timezone: str | None = None) -> dict[str, Any]:
+        return trips.trip(self.uber, trip_id, timezone)
 
     def account_summary(self) -> dict[str, Any]:
         return {"account_id": self.account_id, **self.account.summary(), "booking": self.booking.caps()}
@@ -602,8 +604,12 @@ def create_server(target: UberService | Accounts, *, auth: Any = None, login: Lo
 
     @mcp.tool(title="Live ride", annotations=READ, meta=CORE)
     async def uber_ride_status() -> dict[str, Any]:
-        """The rider's current ride, if any: status and Uber's headline, driver, car and plate, PIN, pickup ETA,
-        arrival time, fare, whether it can still be cancelled, and the stops. state alone when there is none."""
+        """Read a fresh snapshot of the current ride. trip.pickup_arrival gives the car's state, eta_minutes
+        and estimated_at when approaching pickup; arrived means the car is already there. Once OnTrip,
+        trip.destination_arrival gives eta_seconds and estimated_at for destination arrival. checked_at is when
+        the server read the estimate; times use ISO 8601 UTC and estimates can change. Missing estimates are
+        unavailable, never zero. Also driver, car/plate, PIN, fare and stops. state alone when no ride exists.
+        Use this same read-only tool for 'when will my car arrive?' and 'when will we reach the destination?'."""
         return await call("uber_ride_status", UberService.ride_status)
 
     @mcp.tool(title="Cancel the ride", annotations=MONEY)
@@ -621,18 +627,28 @@ def create_server(target: UberService | Accounts, *, auth: Any = None, login: Lo
     async def uber_trips(
         limit: Annotated[int, Field(ge=1, le=20, description="How many past trips, newest first")] = 5,
         cursor: Annotated[str | None, Field(max_length=2000, description="next_cursor from the previous call")] = None,
+        include_details: Annotated[bool, Field(description="Include a detail lookup for each past ride")] = False,
+        timezone: Annotated[
+            str | None, Field(max_length=100, description="IANA zone for detail times; default UTC")
+        ] = None,
     ) -> dict[str, Any]:
-        """Upcoming (on the first page) and past trips: id, where to, when, fare, Uber's page for it. Page back
-        with next_cursor."""
-        return await call("uber_trips", UberService.trip_list, limit, cursor)
+        """Upcoming (first page) and past trips, newest first. Page back with next_cursor.
+        include_details adds each past ride's category, receipt vehicle, route and offset-bearing times in details;
+        costs one extra paced read per past ride. Missing trips have details_error; other errors stop the call.
+        Times on cancelled/upcoming rides may be requested or scheduled times, never proof of travel."""
+        return await call("uber_trips", UberService.trip_list, limit, cursor, include_details, timezone)
 
     @mcp.tool(title="Trip details", annotations=READ)
     async def uber_trip(
         id: Annotated[str, Field(min_length=36, max_length=36, description="A trip id from uber_trips")],
+        timezone: Annotated[str | None, Field(max_length=100, description="IANA zone for times; default UTC")] = None,
     ) -> dict[str, Any]:
-        """One past or upcoming trip: status, fare, product, driver, pickup, drop-off and stops, times, distance,
-        duration, surge, and Uber's route map image."""
-        return await call("uber_trip", UberService.trip_details, id)
+        """One trip: status, fare, ride category (product), receipt vehicle description/year when supplied,
+        driver, pickup/drop-off/stops, distance and duration. times has ISO 8601 begin_at/dropoff_at in the requested
+        zone (default UTC); started_at/ended_at retain Uber's original text. Cancelled/upcoming begin times may be
+        requested/scheduled, never proof of pickup. A receipt vehicle description can just repeat the category;
+        never infer a make, model or plate that Uber did not supply."""
+        return await call("uber_trip", UberService.trip_details, id, timezone)
 
     @mcp.tool(title="Account", annotations=READ)
     async def uber_account() -> dict[str, Any]:

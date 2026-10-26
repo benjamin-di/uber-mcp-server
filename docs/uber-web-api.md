@@ -62,7 +62,7 @@ and its keep-alive reads both sites every 4 hours so `jwt-session` never lapses 
 | `CurrentUserRidersWeb` | riders | Who is signed in (`uuid`, `firstName`, `rating`, `signupCountry`), payment profiles (`uuid`, `tokenType`, `displayable.displayName`), `lastSelectedPaymentProfileUuid`, rider profiles (`type: "Personal"`), Uber Cash and Uber One (`includeUserMemberships: true`). Uber's document also asks for the email address and phone number; the server drops them. Every call proves or refutes the session. |
 | `GetArrears` | riders | Money owed (`hasArrears`, `amountString`, `tripUUID`). |
 | `Activities` | riders | Trips: `past` (with `nextPageToken`, the server's `next_cursor`) and `upcoming`, for `orderTypes: [RIDES, TRAVEL]` and the personal profile. A card's `title` is where to, `subtitle` when, `description` the fare, `cardURL` Uber's page. |
-| `GetTrip` | riders | One trip by its UUID: status, fare, driver, `waypoints` (plain strings, pickup first, drop-off last), times, surge, `receipt` (distance, duration), `mapURL`. |
+| `GetTrip` | riders | One trip by its UUID: status, fare, driver, `waypoints` (plain strings, pickup first, drop-off last), times, surge, `receipt` (distance, duration, `vehicleType`, `carYear`), `mapURL`. |
 | `GetStatus` | rides | Called with `latitude: 0, longitude: 0`, as the web app does before it knows the position: `coordinate` is Uber's guess of the rider's position and `city` its city (currency, time zone); `trip` is the active ride (`uuid`, `clientStatus`, `statusMessage`, `driver`, `vehicle` with `licensePlate`, `pinVerification.pin`, `etaStringShort`, `etaToDestination` in seconds, `fareString`, `cancelable`, `waypoints`). |
 | `SavedPlaces` | rides | The rider's saved places with `savedPlacesMeta.label`, without coordinates. |
 | `PudoLocationSearch` | rides | Place search around `latitude`/`longitude` for `type: PICKUP` or `DROPOFF`; hits without coordinates. |
@@ -157,3 +157,33 @@ Protocol shapes were checked against the rider web application's documents and c
 independent retrieval, a no-charge cancellation preview, cancellation acknowledgement and subsequent `CANCELED`
 status were verified during an explicitly authorized bounded acceptance. No account data or recorded payload from
 that acceptance is included here. Further market/product behavior remains conditional on Uber's returned support.
+
+## Past-ride details
+
+`GetTrip.trip.vehicleDisplayName` is the product/category; it can be empty while `receipt.vehicleType` still
+names the category. Preserve the receipt vehicle description and year separately without inferring make/model.
+`beginTripTime` and `dropoffTime` may be JavaScript Date strings with a numeric GMT offset. Normalize recognized
+offset-bearing values to ISO 8601 for `times`, preserving Uber's original text in the existing fields. Do not
+assume the rider's current city is the historical trip's time zone. The caller can select an IANA zone; default UTC.
+A cancelled Reserve can have a future `beginTripTime` and a single waypoint: that time is not evidence of pickup,
+and a missing final waypoint must not be invented. Completed trips, cancelled trips and receipt/category fallbacks
+were checked with paced read-only calls; tests contain only synthetic values.
+
+## Live arrival estimates
+
+The rider application's `TripFragment` already selects `eta`, `etaStringShort`, `etaToDestination`,
+`clientStatus`, `driver.status` and `statusMessage.detailMode`. Its display code treats `eta` as **minutes until
+pickup**, and adds `etaToDestination` as **seconds from now** to display destination arrival. Do not interchange
+these units or infer numeric durations by parsing the display string. `etaStringShort` can describe either stage.
+
+`WaitingForPickup` is approaching pickup. `ArrivingAtPickup` is rendered as driver arrived by the application;
+`driver.status: Arrived` also means arrived. `OnTrip` is the destination-arrival phase. A zero countdown alone
+does not establish driver arrival. Searching/dispatching, upcoming and unknown phases must not carry stale ETAs.
+`MinutesToPickup` and `TimeOfDropoff` establish the matching numeric display; hidden, unknown or next-stop modes
+are not presented as pickup or final-destination estimates. Missing mode is supported for older responses.
+
+The server exposes separate `pickup_arrival` and `destination_arrival` objects and a local `checked_at` timestamp
+in `live_trip`. It uses the same single `GetStatus` read, without a new operation, background polling or booking.
+The units and phases were verified from the application's shipped documents and display call sites; staged
+synthetic responses test transitions. An idle-account read verifies only the no-active-ride path, not a live
+driver's approach or an in-car estimate.

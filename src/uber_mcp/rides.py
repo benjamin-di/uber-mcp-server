@@ -8,6 +8,7 @@ is its high end. ``reserve_only`` options can only be booked ahead in the Uber a
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from datetime import UTC, datetime
@@ -154,20 +155,62 @@ def trip_view(pickup: dict[str, Any], dropoff: dict[str, Any]) -> dict[str, Any]
 # -- the live ride --------------------------------------------------------------------------------------------
 
 
+def _duration(value: Any, maximum: int) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    # Refuse malformed durations rather than turn them into misleading dates.
+    return value if 0 <= value <= maximum and math.isfinite(value) else None
+
+
+def arrivals(trip: dict[str, Any], now: float) -> dict[str, Any]:
+    """Pickup is minutes; destination is seconds. State and display mode establish their meaning."""
+    state = trip.get("clientStatus")
+    driver = trip.get("driver") or {}
+    mode = (trip.get("statusMessage") or {}).get("detailMode")
+    pickup: dict[str, Any] = {"state": "unavailable"}
+    destination: dict[str, Any] = {"state": "unavailable"}
+    if state == "OnTrip":
+        pickup = {"state": "picked_up"}
+        destination = {"state": "in_progress"}
+        remaining = _duration(trip.get("etaToDestination"), 7 * 86400)
+        if remaining is not None and mode in {None, "TimeOfDropoff"}:
+            destination.update(eta_seconds=remaining, estimated_at=iso(now + remaining))
+        if mode in {None, "TimeOfDropoff"} and trip.get("etaStringShort"):
+            destination["display"] = trip["etaStringShort"]
+    elif state in {"WaitingForPickup", "ArrivingAtPickup"}:
+        destination = {"state": "not_started"}
+        if state == "ArrivingAtPickup" or driver.get("status") == "Arrived":
+            pickup = {"state": "arrived"}
+        else:
+            pickup = {"state": "on_the_way"}
+            remaining = _duration(trip.get("eta"), 7 * 24 * 60)
+            if remaining is not None and mode in {None, "MinutesToPickup"}:
+                pickup.update(eta_minutes=remaining, estimated_at=iso(now + remaining * 60))
+            if mode in {None, "MinutesToPickup"} and trip.get("etaStringShort"):
+                pickup["display"] = trip["etaStringShort"]
+    elif state in {"Looking", "Dispatching"}:
+        pickup = {"state": "finding_driver"}
+        destination = {"state": "not_started"}
+    elif state == "Upcoming":
+        pickup = {"state": "not_started"}
+        destination = {"state": "not_started"}
+    return {"pickup_arrival": pickup, "destination_arrival": destination}
+
+
 def live_trip(trip: dict[str, Any], now: float | None = None) -> dict[str, Any]:
     now = time.time() if now is None else now
     vehicle, driver = trip.get("vehicle") or {}, trip.get("driver") or {}
-    to_destination = trip.get("etaToDestination")
+    timing = arrivals(trip, now)
     out = {
         "id": trip.get("uuid"),
         "status": trip.get("clientStatus"),
         "headline": (trip.get("statusMessage") or {}).get("title"),
         "detail": (trip.get("statusMessage") or {}).get("subtitle"),
         "fare": trip.get("fareString"),
-        "pickup_eta": trip.get("etaStringShort"),
-        "arrive_at": iso(now + to_destination)
-        if isinstance(to_destination, int | float) and to_destination > 0
-        else None,
+        "checked_at": iso(now),
+        **timing,
+        "pickup_eta": timing["pickup_arrival"].get("display"),
+        "arrive_at": timing["destination_arrival"].get("estimated_at"),
         "cancelable": trip.get("cancelable"),
         "pin": (trip.get("pinVerification") or {}).get("pin"),
         "driver": {"name": driver.get("name"), "rating": driver.get("rating")} if driver.get("name") else None,

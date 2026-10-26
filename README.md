@@ -73,10 +73,10 @@ These commands run the latest release from PyPI ([`uber-mcp`](https://pypi.org/p
 | `uber_reservation(id)` | Read Uber's reservation status, exact pickup time and zone, driver assignment and eventual trip ID. |
 | `uber_cancel_reservation(id, confirm)` | Preview the fee for this reservation; after approval, cancel with the same ID and token. |
 | `uber_request_ride(pickup, dropoff, option, payment, confirm)` | Without `confirm`: a preview (the ride, a fresh price, the places, the payment method, the caps) and a `confirm_token`; nothing is booked. With `confirm` (after the person's yes, same arguments): books it, unless the price rose or a cap would be passed. |
-| `uber_ride_status()` | The current ride: status and Uber's headline, driver (name, rating), car and plate, PIN, pickup ETA, arrival time, fare, whether it can still be cancelled, and the stops. Only `state` when there is none. |
+| `uber_ride_status()` | The current ride with separate pickup and destination arrival estimates, when checked, driver (name, rating), car/plate, PIN, fare and stops. Only `state` when there is none. |
 | `uber_cancel_ride(confirm)` | Without `confirm`: the ride and Uber's cancellation notice (any fee) with a `confirm_token`; nothing is cancelled. With `confirm`: cancels that ride. |
-| `uber_trips(limit 1..20, cursor)` | Upcoming (on the first page) and past trips, newest first: id, where to, when, fare and Uber's page for it. Pages back with `next_cursor`. |
-| `uber_trip(id)` | One trip: status, fare, product, driver, pickup, drop-off and stops, times, distance, duration, surge, scheduled, the rating you gave and Uber's route map image. |
+| `uber_trips(limit 1..20, cursor, include_details, timezone)` | Upcoming (first page) and past trips, newest first. Optional past-ride details include category, receipt vehicle, route and times. Pages back with `next_cursor`. |
+| `uber_trip(id, timezone)` | One trip: status, fare, category, receipt vehicle description/year when available, driver, pickup/drop-off/stops, times, distance, duration and route map. |
 | `uber_account()` | The signed-in rider: first name, rating, sign-up country, completed trips, Uber One, payment methods (id, name, type, which one the app uses), Uber Cash, money owed, and the server's booking caps and 24-hour spend. |
 | `uber_status(check)` | Sign-in state (`signed_in`, `generation`, when proven, `cookie_expiry`), today's request budget, any pause, booking caps and spend, `last_error`, and `sign_in_links` (whether `uber_connect` works here). `check=true` adds the cached canary (for monitoring). |
 | `uber_connect()` | A one-time link where the person signs in to their own Uber account, for the caller's account only ([Signing in with a link](#signing-in-with-a-link)). Not read-only (it makes the link), never destructive. |
@@ -94,6 +94,37 @@ A price is `{"display": "...", "cents": 4250, "currency": "USD", "kind": "fixed"
 Options marked `reserve_only` need a future Reserve quote before they can be booked. Caps and spend are
 `{"cents": 8000, "currency": "USD", "display": "USD 80.00"}`. Errors are `{"error": {code, next_step, retryable}}`,
 and the `next_step` text tells the assistant what to do ([Troubleshooting](#troubleshooting)).
+
+### When will my car arrive? When will we get there?
+
+Call `uber_ride_status()` for a fresh snapshot. The two estimates are separate:
+
+- Before pickup, `trip.pickup_arrival` reports `on_the_way`, with `eta_minutes`, `estimated_at` and Uber's display
+  text when available. `arrived` means Uber reports that the car is already at pickup. Searching for a driver and
+  future rides do not imply that a car is on the way.
+- Once the trip is underway, `trip.destination_arrival` reports `in_progress`, with `eta_seconds`, `estimated_at`
+  and display text when available. The pickup state becomes `picked_up`; no pickup countdown is shown.
+
+`trip.checked_at` records when the server read the estimate. Arrival timestamps use ISO 8601 UTC with an explicit
+offset; assistants can present them in the rider's local time. These are changing estimates, refreshed on each
+call. Missing estimates are omitted, not replaced by zero; a genuine zero estimate does not prove arrival.
+Uber's hidden or next-stop estimates are not labelled as final-destination arrivals. No automatic polling or
+notifications are started. Existing `pickup_eta` and `arrive_at` aliases now appear only in their applicable phase.
+
+### Reviewing past rides
+
+Use `uber_trips(include_details=true, timezone="Europe/Paris")` to review routes, categories and times together.
+Follow `next_cursor` for older rides, or use `uber_trip(id, timezone=...)` for a single ride. Detail mode adds one
+paced read per past ride; the default list stays lightweight. If a trip has disappeared, its summary remains with
+`details_error`; sign-in, rate-limit and other upstream failures stop the call.
+
+`product` is the ride category. `vehicle.description` and `vehicle.year` come directly from Uber's receipt when
+available; the description can simply repeat the category. History does not reliably expose make, model or plate.
+`pickup`, `dropoff` and `stops` are Uber's reported route addresses. `times.begin_at` and `times.dropoff_at` use
+ISO 8601 with explicit offsets in the requested IANA time zone (UTC by default); the original text remains in
+`started_at` and `ended_at`. Missing or unrecognizable times are omitted from `times` rather than guessed.
+For cancelled or upcoming trips, the reported beginning can be the requested/scheduled time, so
+`times.meaning` says `reported_times_not_proof_of_travel`; it is `completed_trip` for completed trips.
 
 ## Reserve a future ride
 
