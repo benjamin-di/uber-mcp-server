@@ -11,6 +11,12 @@ import re
 from typing import Any
 
 NEXT_STEP: dict[str, str] = {
+    "connection_disconnected": (
+        "This Uber connection is disconnected. The account owner must open My connections and explicitly reconnect."
+    ),
+    "connection_state_invalid": (
+        "The account connection controls cannot be read safely. Access is stopped; ask the operator to recover them."
+    ),
     "invalid_argument": ("Fix the arguments and call again."),
     "not_signed_in": (
         "No Uber account is signed in yet. Call uber_connect: on a server that offers it, it "
@@ -54,8 +60,9 @@ NEXT_STEP: dict[str, str] = {
         "booked. Tell the person; they can book in the Uber app."
     ),
     "price_rose": (
-        "The price went up. Nothing was booked. Review the fresh preview if provided, otherwise request a new "
-        "preview. Confirm only after the person approves its price."
+        "The server's fresh quote exceeds the approved price or uses a different currency. Nothing was submitted "
+        "to Uber. Compare the amounts and currencies, not just the display text. Review the fresh preview if "
+        "provided, otherwise request a new preview. Confirm only after the person approves its price."
     ),
     "confirm_invalid": (
         "That confirm token is unknown, already used, expired or for another ride. Nothing "

@@ -466,7 +466,7 @@ class Booking:
         try:
             return self._reserve(pickup, dropoff, option, pickup_at, timezone, payment, confirm)
         except UberError as exc:
-            if confirm is not None:
+            if confirm is not None and exc.code != "price_rose":  # price comparison is audited with its amounts
                 self.ledger.audit("reserve", "refused_or_uncertain", reason=exc.code)
             raise
         except Exception:
@@ -499,33 +499,7 @@ class Booking:
                 pay = self.account.payment(payment)
                 quote = native.quote(start, end, pay, when)
                 selected = rides.pick(quote["options"], option)
-                self._reserve_price(selected, per_ride, per_day)
-                self._reservation_conflict(when["timestamp"])
-                record = {
-                    "pickup": start,
-                    "dropoff": end,
-                    "payment": pay,
-                    "when": when,
-                    "option_id": selected["id"],
-                    "price": selected["price"],
-                    "terms": quote["terms"],
-                }
-                token = self.ledger.add_pending("rs", record)
-                return {
-                    "preview": True,
-                    "confirm_token": token,
-                    "token_expires_in_s": TOKEN_TTL,
-                    **rides.trip_view(start, end),
-                    "ride": rides.public(selected),
-                    **{k: v for k, v in quote.items() if k != "options"},
-                    "payment": pay["method"]["name"],
-                    "caps": self.caps(),
-                    "next_step": (
-                        "Nothing is reserved. Show the exact pickup date, time, timezone, route, price, "
-                        "payment and reservation terms. After the person's explicit approval, call "
-                        "uber_reserve_ride with only confirm=<confirm_token>."
-                    ),
-                }
+                return self._reserve_preview(start, end, pay, when, selected, quote, per_ride, per_day)
             if any(v is not None for v in (pickup, dropoff, option, pickup_at, timezone, payment)):
                 raise UberError("invalid_argument", "confirmation takes only the preview's confirm token")
             pending = self.ledger.take_pending(confirm, "rs")
@@ -542,7 +516,28 @@ class Booking:
             selected = rides.pick(quote["options"], pending["option_id"])
             approved, fresh = pending["price"], selected.get("price") or {}
             if fresh.get("currency") != approved["currency"] or (fresh.get("cents") or 0) > approved["cents"]:
-                raise UberError("price_rose")
+                self.ledger.audit(
+                    "reserve",
+                    "refused",
+                    reason="price_rose",
+                    approved=approved["cents"],
+                    fresh=fresh.get("cents"),
+                    approved_currency=approved["currency"],
+                    fresh_currency=fresh.get("currency"),
+                )
+                if not isinstance(fresh.get("cents"), int) or not fresh.get("currency"):
+                    raise UberError("price_rose")  # no usable fresh price to offer for approval
+                again = self._reserve_preview(
+                    pending["pickup"], pending["dropoff"], pay, pending["when"], selected, quote, per_ride, per_day
+                )
+                raise UberError(
+                    "price_rose",
+                    extra={
+                        "approved_price": money(approved["cents"], approved["currency"]),
+                        "fresh_price": money(fresh["cents"], fresh["currency"]),
+                        "preview": again,
+                    },
+                )
             if quote["terms"] != pending["terms"]:
                 raise UberError("terms_changed")
             self._reserve_price(selected, per_ride, per_day)
@@ -632,6 +627,49 @@ class Booking:
             except UberError:
                 result["verification"] = "status_unavailable"
             return result
+
+    def _reserve_preview(
+        self,
+        start: dict,
+        end: dict,
+        pay: dict,
+        when: dict,
+        selected: dict,
+        quote: dict,
+        per_ride: Money,
+        per_day: Money,
+    ) -> dict:
+        """Bind approval to this exact quote, including when a confirmation discovers a higher fare."""
+        self._reserve_price(selected, per_ride, per_day)
+        self._reservation_conflict(when["timestamp"])
+        self._enabled()
+        token = self.ledger.add_pending(
+            "rs",
+            {
+                "pickup": start,
+                "dropoff": end,
+                "payment": pay,
+                "when": when,
+                "option_id": selected["id"],
+                "price": selected["price"],
+                "terms": quote["terms"],
+            },
+        )
+        return {
+            "preview": True,
+            "confirm_token": token,
+            "token_expires_in_s": TOKEN_TTL,
+            **rides.trip_view(start, end),
+            "ride": rides.public(selected),
+            **{k: v for k, v in quote.items() if k != "options"},
+            "payment": pay["method"]["name"],
+            "caps": self.caps(),
+            "next_step": (
+                "Nothing is reserved. Show the exact pickup date, time, timezone, route, price, "
+                "payment and reservation terms. After the person's explicit approval, call "
+                "uber_reserve_ride with only confirm=<confirm_token>."
+            ),
+        }
 
     def _reserve_price(self, option: dict, per_ride: Money, per_day: Money) -> None:
         if not option.get("bookable"):

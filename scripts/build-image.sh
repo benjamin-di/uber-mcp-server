@@ -8,6 +8,7 @@ dockerfile="${2:?dockerfile required}"
 vcs_ref="${3:?revision required}"
 build_date="${4:?build date required}"
 cache="${5:?cache ref required}"
+version="$(python3 -c 'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
 lookup_error="$(mktemp)"
 trap 'rm -f "$lookup_error"' EXIT
 if docker manifest inspect "$candidate" >/dev/null 2>"$lookup_error"; then
@@ -21,6 +22,7 @@ fi
 grep -Eqi 'manifest unknown|not found' "$lookup_error" || { cat "$lookup_error" >&2; exit 1; }
 docker buildx build --provenance=false --output "${ZSTD_PUSH:?}" -f "$dockerfile" \
     --platform "${PLATFORMS:-linux/amd64}" \
+    --build-arg VERSION="$version" \
     --build-arg VCS_REF="$vcs_ref" \
     ${SOURCE_URL:+--build-arg "SOURCE_URL=$SOURCE_URL"} \
     --build-arg BUILD_DATE="$build_date" \

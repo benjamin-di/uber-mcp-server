@@ -64,6 +64,7 @@ RUN uv pip install --system --compile-bytecode --no-deps . && rm -rf /app/src
 RUN python -c "from pathlib import Path; import patchright; p = Path(patchright.__file__).parent / 'driver' / 'node'; p.unlink(); p.symlink_to('/usr/local/bin/browser-node')" \
  && python -m patchright --version
 
+ARG VERSION=development
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 ARG SOURCE_URL=https://github.com/benjamin-di/uber-mcp-server
@@ -71,6 +72,7 @@ LABEL org.opencontainers.image.title="uber-mcp-login" \
       org.opencontainers.image.description="The browser a person signs in to Uber with, for uber-mcp on a server" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}"
 

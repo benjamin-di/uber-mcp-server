@@ -5,7 +5,7 @@ text field, in a headed Chromium on the window's virtual display), and the serve
 ``/uber`` as behind a path-stripping reverse proxy. Then, as the person: asks ``uber_connect`` for a link, opens it in
 a headless Chromium, waits for the live view, focuses it, puts text on the clipboard, presses Ctrl+V and checks the
 text arrived in the remote field, typed. Clipboard *reading* is not granted to the page, so the text can only have come
-from the browser's own paste event. Last, closing the page must close the sign-in window.
+from the browser's own paste event. Closing and reopening the page resumes the same window; explicit Cancel ends it.
 
 Needs Xvfb, x11vnc, patchright's Chromium and noVNC's files (the login image has them all):
 
@@ -21,14 +21,17 @@ import asyncio
 import contextlib
 import json
 import os
+import secrets
 import socket
 import sys
 import tempfile
+import time
 import urllib.request
 from pathlib import Path
 
 import uvicorn
 from patchright.async_api import async_playwright
+from signin_window.oidc import BrowserAuth, OIDCConfig
 from signin_window.service import Window, Windows, build_app
 from starlette.applications import Starlette
 from starlette.routing import Mount
@@ -36,6 +39,7 @@ from starlette.routing import Mount
 from uber_mcp import accounts
 from uber_mcp.auth import require_bearer
 from uber_mcp.config import Settings
+from uber_mcp.connections import ConnectionsConfig
 from uber_mcp.server import HTTP_OPTIONS, Accounts, create_server
 
 # Typed without the trailing newline. ASCII only: the virtual display's keyboard has no keys for other characters
@@ -57,8 +61,11 @@ def free_port() -> int:
 
 
 async def serve(app, port: int) -> uvicorn.Server:  # type: ignore[no-untyped-def]
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on"))
-    asyncio.get_running_loop().create_task(server.serve())
+    server = uvicorn.Server(
+        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning", lifespan="on", access_log=False)
+    )
+    task = asyncio.get_running_loop().create_task(server.serve())
+    SERVERS.append((server, task))
     for _ in range(100):
         if server.started:
             return server
@@ -131,7 +138,22 @@ async def main() -> int:
             }
         )
         accounts.add(settings, "e2e")
-        mcp_app = create_server(Accounts.from_settings(settings), auth=require_bearer({"MCP_BEARER_TOKEN": BEARER}))
+        oidc = OIDCConfig(
+            issuer=f"http://127.0.0.1:{mcp_port}",
+            client_id="synthetic-connections",
+            public_url=base,
+            state_dir=state / "browser-sessions",
+            cookie_name="__Host-uber-connections",
+            required_group="test-users",
+            claim_names=(),
+            allow_loopback_http=True,
+        )
+        config = ConnectionsConfig(oidc, {"synthetic-owner": "e2e"})
+        mcp_app = create_server(
+            Accounts.from_settings(settings),
+            auth=require_bearer({"MCP_BEARER_TOKEN": BEARER}),
+            connections_config=config,
+        )
         inner = mcp_app.http_app(**HTTP_OPTIONS)
 
         @contextlib.asynccontextmanager
@@ -142,14 +164,40 @@ async def main() -> int:
         await serve(Starlette(routes=[Mount("/uber", app=inner)], lifespan=lifespan), mcp_port)
 
         link = await asyncio.to_thread(ask_for_link, f"{base}/mcp")
-        assert link["account_id"] == "e2e" and link["url"].startswith(f"{base}/connect/"), link
+        assert link["account_id"] == "e2e" and link["url"] == f"{base}/connections/", link
         print("link made for the caller's account")
 
         viewer = await pw.chromium.launch(headless=True)
         context = await viewer.new_context(viewport={"width": 1280, "height": 800})
+        browser_auth = BrowserAuth(oidc)
+        sid = secrets.token_urlsafe(32)
+        browser_auth.store.save(
+            sid,
+            {
+                "issuer": oidc.issuer,
+                "sub": "synthetic-owner",
+                "name": "Example owner",
+                "groups": ["test-users"],
+                "claims": {},
+                "expires": time.time() + 900,
+            },
+        )
+        await context.add_cookies(
+            [
+                {
+                    "name": browser_auth.cookie,
+                    "value": sid,
+                    "url": f"http://127.0.0.1:{mcp_port}",
+                    "httpOnly": True,
+                    "sameSite": "Lax",
+                }
+            ]
+        )
         await context.grant_permissions(["clipboard-write"], origin=f"http://127.0.0.1:{mcp_port}")
         page = await context.new_page()
         await page.goto(link["url"])
+        await page.get_by_role("button", name="Connect", exact=True).click()
+        link["url"] = page.url
         await page.click("#go")  # the page names the account and waits for the person to continue
         frame_element = await page.wait_for_selector("iframe", timeout=60_000)
         frame = await frame_element.content_frame()
@@ -180,15 +228,18 @@ async def main() -> int:
             return 1
         print("Ctrl+V typed the clipboard into the remote page (paste event; clipboard reading not granted)")
 
-        await page.close(run_before_unload=True)  # pagehide sends the cancel
+        await page.close()
+        page = await context.new_page()
+        await page.goto(link["url"])
+        await page.get_by_role("button", name="Cancel", exact=True).click()
         for _ in range(300):  # closing ends Chromium, x11vnc and Xvfb, which can take a few seconds
             if not open_windows(windows):
                 break
             await asyncio.sleep(0.1)
         if open_windows(windows):
-            print("FAIL: closing the page did not close the sign-in window", file=sys.stderr)
+            print("FAIL: explicit cancellation did not close the sign-in window", file=sys.stderr)
             return 1
-        print("closing the page closed the sign-in window")
+        print("closing the page resumed the same window; explicit cancellation closed it")
         await viewer.close()
     print("paste e2e: ok")
     return 0
@@ -202,11 +253,16 @@ async def run() -> int:
     try:
         return await main()
     finally:
+        for server, _ in SERVERS:
+            server.should_exit = True
+        for _, task in SERVERS:
+            await asyncio.wait_for(task, 25)
         if WINDOWS is not None:
             await WINDOWS.close_all()  # never leave a display or browser behind
 
 
 WINDOWS: Windows | None = None
+SERVERS: list[tuple[uvicorn.Server, asyncio.Task]] = []
 
 if __name__ == "__main__":
     sys.exit(asyncio.run(run()))

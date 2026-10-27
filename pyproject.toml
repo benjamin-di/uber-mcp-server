@@ -1,6 +1,6 @@
 [project]
 name = "uber-mcp"
-version = "0.4.1"
+version = "0.4.5"
 description = "Unofficial MCP server for Uber rides: places, live fares, ride requests behind a confirm step, trip status and history"
 readme = "README.md"
 license = "MIT"
@@ -27,7 +27,7 @@ dependencies = [
     "platformdirs>=4.3",
     "tzdata>=2025.2",
     # The sign-in window and its links: the login service, the relay, the paste add-on.
-    "signin-window>=0.3.0,<0.4",
+    "signin-window[oidc]>=0.4.7,<0.5",
 ]
 
 [project.urls]

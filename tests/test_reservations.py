@@ -106,6 +106,88 @@ def test_fresh_price_and_terms_need_new_approval(reserve, fake):
     assert "TripRequest" not in fake.ops()
 
 
+@pytest.mark.parametrize("unchanged_display", [False, True])
+def test_price_rise_returns_the_exact_fresh_preview(reserve, fake, unchanged_display):
+    svc, args, _ = reserve
+    preview = svc.reserve_ride(**args)
+    before = len(fake.sent)
+    fake.prices["UberX"] = 5001
+    if unchanged_display:
+        products = fake.override["Products"]
+
+        def same_display(variables):
+            result = products(variables)
+            result["data"]["products"]["tiers"][0]["products"][0]["fares"][0]["fare"] = preview["ride"]["price"][
+                "display"
+            ]
+            return result
+
+        fake.override["Products"] = same_display
+    error = raises("price_rose", svc.reserve_ride, confirm=preview["confirm_token"]).payload()
+    again = error["preview"]
+    assert error["approved_price"] == {"cents": 5000, "currency": "XXD", "display": "XXD 50.00"}
+    assert error["fresh_price"] == {"cents": 5001, "currency": "XXD", "display": "XXD 50.01"}
+    assert again["ride"]["price"]["cents"] == 5001
+    if unchanged_display:
+        assert again["ride"]["price"]["display"] == preview["ride"]["price"]["display"]
+    assert again["confirm_token"] != preview["confirm_token"]
+    for key in ("pickup", "dropoff", "pickup_at", "timezone", "payment", "terms"):
+        assert again[key] == preview[key]
+    assert "_quote" not in json.dumps(error)
+    assert [op for op, _, _ in fake.sent[before:]].count("Products") == 1
+    assert not any(op.startswith("Pudo") for op, _, _ in fake.sent[before:])
+    assert "TripRequest" not in fake.ops() and svc.ledger.attempts() == {}
+    audit = svc.ledger.recent_audit(10)
+    assert len(audit) == 1
+    assert {key: value for key, value in audit[0].items() if key != "at"} == {
+        "action": "reserve",
+        "outcome": "refused",
+        "reason": "price_rose",
+        "approved": 5000,
+        "fresh": 5001,
+        "approved_currency": "XXD",
+        "fresh_currency": "XXD",
+    }
+    raises("confirm_invalid", svc.reserve_ride, confirm=preview["confirm_token"])
+    assert svc.reserve_ride(confirm=again["confirm_token"])["reserved"]
+    raises("confirm_invalid", svc.reserve_ride, confirm=again["confirm_token"])
+    assert fake.ops().count("TripRequest") == 1
+
+
+@pytest.mark.parametrize("cents", [4900, 5000])
+def test_same_or_lower_price_does_not_need_new_approval(reserve, fake, cents):
+    svc, args, _ = reserve
+    preview = svc.reserve_ride(**args)
+    fake.prices["UberX"] = cents
+    assert svc.reserve_ride(confirm=preview["confirm_token"])["price"]["cents"] == cents
+    assert fake.ops().count("TripRequest") == 1
+
+
+def test_a_fresh_quote_without_a_currency_is_refused_without_a_preview(reserve, fake):
+    svc, args, _ = reserve
+    preview = svc.reserve_ride(**args)
+    products = fake.override["Products"]
+
+    def no_currency(variables):
+        result = products(variables)
+        result["data"]["products"]["tiers"][0]["products"][0].pop("currencyCode", None)
+        return result
+
+    fake.override["Products"] = no_currency
+    error = raises("price_rose", svc.reserve_ride, confirm=preview["confirm_token"]).payload()
+    assert "preview" not in error and "fresh_price" not in error
+    assert "TripRequest" not in fake.ops() and svc.ledger.attempts() == {}
+    assert svc.ledger.recent_audit(10)[0]["fresh_currency"] is None
+
+
+def test_repriced_reservation_still_obeys_caps(reserve, fake):
+    svc, args, _ = reserve
+    preview = svc.reserve_ride(**args)
+    fake.prices["UberX"] = 10001
+    raises("over_cap", svc.reserve_ride, confirm=preview["confirm_token"])
+    assert "TripRequest" not in fake.ops() and svc.ledger.attempts() == {}
+
+
 def test_payment_default_cannot_drift(reserve, fake):
     svc, args, _ = reserve
     preview = svc.reserve_ride(**args)

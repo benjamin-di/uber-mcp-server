@@ -79,7 +79,7 @@ These commands run the latest release from PyPI ([`uber-mcp`](https://pypi.org/p
 | `uber_trip(id, timezone)` | One trip: status, fare, category, receipt vehicle description/year when available, driver, pickup/drop-off/stops, times, distance, duration and route map. |
 | `uber_account()` | The signed-in rider: first name, rating, sign-up country, completed trips, Uber One, payment methods (id, name, type, which one the app uses), Uber Cash, money owed, and the server's booking caps and 24-hour spend. |
 | `uber_status(check)` | Sign-in state (`signed_in`, `generation`, when proven, `cookie_expiry`), today's request budget, any pause, booking caps and spend, `last_error`, and `sign_in_links` (whether `uber_connect` works here). `check=true` adds the cached canary (for monitoring). |
-| `uber_connect()` | A one-time link where the person signs in to their own Uber account, for the caller's account only ([Signing in with a link](#signing-in-with-a-link)). Not read-only (it makes the link), never destructive. |
+| `uber_connect()` | The authenticated My connections link, where the owner starts sign-in to their own Uber account ([Signing in with a link](#signing-in-with-a-link)). Its confirmation annotations stay unchanged; returning the link starts and replaces nothing. |
 
 A pickup or drop-off can be a saved place's label (`Home`), a place id from `uber_places` (Google place ids such as
 `ChIJ...`, so ids from a Google Maps tool work too), `lat,lng`, or free text (Uber's top match, echoed back with
@@ -271,51 +271,52 @@ A server has no screen for the sign-in window. The login browser image (`ghcr.io
 runs Uber's sign-in page in a Chromium next to the server and shows it to the person through
 [noVNC](https://github.com/novnc/noVNC) in their own browser. Nothing on the sign-in is automated there either.
 
-1. Run the login service beside the server on a private network, with the same `UBER_LOGIN_TOKEN` (32 or more
-   characters) on both, and `UBER_LOGIN_URL` on the server ([Running it as a server](#running-it-as-a-server)).
-2. Start a sign-in on the server and wait:
+Run the service beside the server on a private network, with the same `UBER_LOGIN_TOKEN`
+(32 or more characters) on both and `UBER_LOGIN_URL` on the server. Hosted owners use
+the authenticated My connections page described below. The service verifies both Uber
+surfaces and the retained rider binding before the application seals accepted credentials
+with `UBER_SESSION_KEY`.
 
-   ```sh
-   docker exec -it uber-mcp uber-mcp admin login            # --layout phone for a phone-sized window
-   ```
-
-   It prints a link, `UBER_LOGIN_VIEW_URL/view/<id>?t=<token>`, that works for this one sign-in only.
-3. The person opens the link and signs in to Uber on the page it shows. The service checks the session on both of
-   Uber's sites, hands it to the server once and closes the browser; the server seals it (`UBER_SESSION_KEY`) and
-   saves it. `admin login` gives up after 20 minutes (`--minutes`).
-
-The link must reach the login service's port 8080. The default, `http://localhost:8766`, suits the compose file
-below (the service on the server's port 8766, loopback only) opened through an SSH port forward
-(`ssh -L 8766:127.0.0.1:8766 <server>`); set `UBER_LOGIN_VIEW_URL` to your own HTTPS address if you publish the
-service through a reverse proxy instead. Its API needs the bearer; the view page and the remote-desktop
-stream need the per-sign-in token.
+The login API and operator CLI are privileged local administration. Keep raw `/logins`
+and operator `/view` routes private; a per-window token is not a replacement for hosted
+owner OIDC. A loopback-only maintenance port must not become a second public login entry.
 
 ### Signing in with a link
+
+Human OIDC authorizes account management only. The MCP gateway (for example
+Agentgateway) separately authenticates clients/workloads and applies audience,
+scope and tool ceilings; Uber's native rider session and booking rules are a third
+boundary. Connecting Uber never approves an agent or a paid ride. Pocket ID is one
+compatible OIDC provider, with no vendor-specific requirement. See
+[permission boundaries and the remaining project checks](docs/CONNECTIONS.md).
 
 With the login service and a public address (`UBER_PUBLIC_URL`, the address your reverse proxy serves the server at,
 e.g. `https://example.com/uber` when `/mcp` is `https://example.com/uber/mcp`), people sign in without the operator:
 they ask their assistant to connect Uber, the assistant calls `uber_connect` (the `not_signed_in` and
 `session_expired` errors point it there) and gives them the link, and they sign in on Uber's own page in their
 browser, phone or computer. The page names the account it connects and opens Uber's sign-in only when the person
-continues (so a chat app's link preview starts nothing).
+continues (so a chat app's link preview starts nothing). Hosted sign-in requires the account owner's
+OIDC browser identity, including links created by an assistant. Configure the identity client and account bindings
+before upgrading; [Connections setup and recovery](docs/CONNECTIONS.md) lists the routes, required settings and
+persistent disconnect controls. My connections also lets the owner reconnect without asking an assistant.
 
 - **For the caller's account only.** The link is made for the account the request is for (the default account, or
-  the one the trusted header names); there is no way to ask for another account's link. A newer link replaces the
-  older one; at most 6 are made per account an hour.
+  the one the trusted header names). It returns My connections without starting or replacing an attempt. Only
+  an authenticated owner choosing Connect creates an attempt; at most 6 owner starts are allowed per account an hour.
 - **One sign-in, 20 minutes.** `<UBER_PUBLIC_URL>/connect/<id>` (192 random bits) works until a sign-in succeeds or
-  20 minutes pass, whichever is first; a reload or "try again" opens a new window, up to 4 times. Its pages are never
+  20 minutes pass, whichever is first. Reload resumes an existing window; an explicit retry can open a new one, up to 4 times. Its pages are never
   cached (`Cache-Control: no-store`) and send no referrer. Requests for ids that do not exist are counted per address
   (from `X-Forwarded-For`, which the proxy must set): after 20 in ten minutes that address gets 429 instead of 404
   (a real link keeps working).
 - **It only puts a session in.** Once the login service has proven the sign-in, the server stores it as that
-  account's session and proves it once more with Uber; the page shows only the first letter of the rider's name.
+  account's session only after independently verifying a private staged candidate with Uber; the page shows only the first letter of the rider's name.
   Nothing under `/connect` shows or returns a session. A sign-in as a different Uber rider than the account already
   has (even an expired one) is refused, and so is a rider another account on this server holds; the operator can
   still sign an account in with `uber-mcp admin login`.
-- **Your proxy decides who can reach it.** `/connect/...` (the page, its calls, noVNC's files and the live view's
-  WebSocket) is served without the bearer, because people open it in a browser; the link id is its credential. Route
-  only `<prefix>/connect/...` to the server without authentication, never anything else, and do not add your
-  bearer to it.
+- **The authenticated owner controls it.** `/connect/...` is outside the MCP bearer boundary, but its page,
+  calls, noVNC assets and WebSocket require the account owner's browser session. The id alone authorizes nothing.
+  Forward only the exact browser routes documented in [Connections](docs/CONNECTIONS.md), preserve cookies and
+  Origin, and strip untrusted bearer and account headers. `/mcp` keeps its existing admission checks.
 - **Pasting works.** Ctrl+V (Cmd+V) in the window types the clipboard's text into Uber's page (a small add-on to
   noVNC's viewer from [signin-window](https://github.com/benjamin-di/signin-window), the library the sign-in window
   and its links are built on; up to 1000 characters, characters the window's keyboard has, which covers ASCII). On a phone, noVNC's keyboard button opens the phone's keyboard, which pastes as usual.
@@ -425,6 +426,7 @@ The server (`uber-mcp`):
 | `UBER_LOGIN_URL` | unset | the login service on a private network, a name and port such as `http://uber-mcp-login:8080` (for `uber-mcp admin login`) |
 | `UBER_LOGIN_TOKEN` | unset | the login service's bearer, 32 or more characters; required with `UBER_LOGIN_URL` |
 | `UBER_LOGIN_VIEW_URL` | `http://localhost:8766` | where the person opens the login service's view page ([above](#on-a-server-the-login-service)) |
+| `UBER_CONNECTIONS_*` | required for browser sign-in | fixed issuer/client/group and administrator-owned account mapping; [configuration](docs/CONNECTIONS.md) |
 | `UBER_PUBLIC_URL` | unset | the HTTPS address people reach this server at (the parent of `/mcp`); with the login service it turns on sign-in links ([Signing in with a link](#signing-in-with-a-link)) |
 | `UBER_TRUSTED_ACCOUNT_HEADER` | unset | the header your authenticating proxy sets to name the caller's account ([Accounts](#accounts)); only for a bearer no one but the proxy holds |
 | `UBER_DEFAULT_ACCOUNT` | `default` | the id of the account kept directly in the state folder |

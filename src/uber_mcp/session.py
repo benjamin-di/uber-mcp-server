@@ -25,6 +25,7 @@ from typing import Any
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from .connection_state import ConnectionState
 from .errors import UberError
 from .fsio import atomic_write_bytes, file_key, locked, read_private
 
@@ -105,6 +106,7 @@ class Held:
 class Session:
     def __init__(self, path: Path, key: bytes | None = None, clock=time.time) -> None:
         self.path = Path(path)
+        self.connection = ConnectionState(self.path.parent)
         self._key = key
         self._clock = clock
         self._lock = threading.Lock()
@@ -185,26 +187,48 @@ class Session:
     def _write(self, payload: dict[str, Any]) -> None:
         atomic_write_bytes(self.path, self._encode(json.dumps(payload, separators=(",", ":")).encode()))
 
-    def write(self, account: dict[str, str], user_agent: str, cookies: list[dict[str, Any]]) -> int:
+    def write(
+        self,
+        account: dict[str, str],
+        user_agent: str,
+        cookies: list[dict[str, Any]],
+        *,
+        expected_revision: str | None = None,
+        reconnect: bool = False,
+    ) -> int:
         """Store a sign-in the person did themselves, one generation above the current file."""
         cookies = clean_cookies(cookies)
         if not cookies or not account.get("uuid"):
             raise UberError("session_invalid", log_detail="sign-in without cookies or account")
-        with locked(self._lock_path):
-            try:
-                generation = int(self._parse()["generation"]) + 1
-            except (OSError, ValueError, KeyError):
-                generation = 1
-            self._write(
-                {
-                    "schema": SCHEMA,
-                    "generation": generation,
-                    "saved_at": self._clock(),
-                    "account": {"uuid": account["uuid"], "name": str(account.get("name") or "")[:40]},
-                    "user_agent": user_agent,
-                    "cookies": cookies,
-                }
-            )
+        with self.connection.locked() as control:
+            if expected_revision is not None and expected_revision != control["epoch"]:
+                raise UberError("connection_disconnected")
+            if control["state"] != "active" and not (
+                reconnect and expected_revision is not None and control["state"] == "disconnected"
+            ):
+                raise UberError("connection_disconnected")
+            if control["rider"] and control["rider"] != account["uuid"]:
+                raise UberError("session_invalid", log_detail="bound rider mismatch")
+            with locked(self._lock_path):
+                try:
+                    prior = int(self._parse()["generation"])
+                except (OSError, ValueError, KeyError):
+                    prior = 0
+                generation = max(prior, control["generation"]) + 1
+                updated = {**control, "rider": account["uuid"], "generation": generation}
+                self.connection.save(updated)  # retain the watermark even if publication is interrupted
+                self._write(
+                    {
+                        "schema": SCHEMA,
+                        "generation": generation,
+                        "saved_at": self._clock(),
+                        "account": {"uuid": account["uuid"], "name": str(account.get("name") or "")[:40]},
+                        "user_agent": user_agent,
+                        "cookies": cookies,
+                    }
+                )
+                if control["state"] != "active":
+                    self.connection.save({**updated, "state": "active"})
         return generation
 
     def clear(self) -> bool:
@@ -221,7 +245,9 @@ class Session:
 
     def checkout(self) -> tuple[int, http.cookiejar.CookieJar, str]:
         """The held generation, a cookie jar for one call and the signed-in browser's User-Agent."""
-        with self._lock:
+        with self.connection.locked() as control, self._lock:
+            if control["state"] != "active":
+                raise UberError("connection_disconnected")
             self._refresh()
             held = self._held
             if self._error or held is None:
@@ -232,6 +258,16 @@ class Session:
 
     def store_jar(self, jar: http.cookiejar.CookieJar, generation: int) -> None:
         """Keep and persist the cookies Uber set during a call, unless a newer sign-in replaced the file."""
+        try:
+            with self.connection.locked() as control:
+                if control["state"] == "active":
+                    self._store_jar(jar, generation)
+        except UberError:
+            # A completed call retains its actual result; a disconnect or unreadable
+            # barrier prevents write-back without masking an admitted money outcome.
+            return
+
+    def _store_jar(self, jar: http.cookiejar.CookieJar, generation: int) -> None:
         with self._lock:
             held = self._held
             if held is None or held.generation != generation or held.state == "dead":

@@ -47,6 +47,12 @@ operation the way [docs/uber-web-api.md](docs/uber-web-api.md) describes. Fixtur
   the live view, the paste add-on and the login service's windows come from
   [signin-window](https://github.com/benjamin-di/signin-window): fix them there, not here; this repository holds
   Uber's window (`uber_login/window.py`) and what a sign-in does to an account (`connect.py`).
+- Hosted browser routes require owner OIDC authentication through the shared `signin_window.oidc` integration.
+  `connections.py` owns signed-identity account mapping; `connection_state.py` owns persistent owner/rider bindings
+  and disconnect barriers. Never fall back to capability-only links. Keep account controls independent of browser
+  configuration and preserve them on rollback. A reconnect is verified in staging before replacing accepted
+  credentials. Disconnect never removes booking history, cancels a ride or resets budgets. OIDC control-plane
+  traffic is confined to the configured issuer and never widens Uber's data-plane host or operation allowlist.
 - Tool results never carry exception text or cookies; errors use the fixed `NEXT_STEP` table in `errors.py`. Logs
   never carry tool arguments (places), cookie values or Uber's error text.
 - `operations.json` holds Uber's own GraphQL documents, refreshed with `scripts/sync-operations.py`; never hand-write
