@@ -391,7 +391,9 @@ def test_busy_cancel_and_the_start_limit(http, login):
     assert http.post(path + "/start", json={}).json()["state"] == "busy"
     login.busy = False
     assert http.post(path + "/start", json={}).json()["state"] == "starting"
-    assert http.post(path + "/start", json={}).json()["state"] == "starting"  # no second window
+    # Repeating start reports the open window (it may already be waiting) and opens no second one.
+    assert http.post(path + "/start", json={}).json()["state"] in {"starting", "waiting"}
+    assert len(login.started) == 1
     assert http.post(path + "/cancel").status_code == 204
     assert login.closed == ["login-00000000000"]
     assert http.get(path + "/state").json()["state"] == "cancelled"
