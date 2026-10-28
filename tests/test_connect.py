@@ -355,6 +355,7 @@ def test_the_result_of_a_sign_in_is_never_shown(http, login, fake):
     path = owner_link(http)
     http.post(path + "/start", json={})
     login.sign_in("login-00000000000", uuid=OTHER_RIDER)
+    assert settled_state(http, path)["state"] == "connected"  # the relay may still be finishing the attempt
     body = http.get(path + "/state").text
     assert json.loads(body)["state"] == "connected"
     assert "s1" not in body and "cookies" not in body and OTHER_RIDER not in body
@@ -612,3 +613,17 @@ def test_another_owner_action_fails_promptly_while_lifecycle_cleanup_is_running(
             )
     assert connection.read()["epoch"] == revision
     assert FLOWS[-1].relay.links("second") == []
+
+
+def test_signed_out_home_goes_straight_to_sign_in_and_an_unbound_person_is_refused_without_a_loop(http):
+    http.cookies.clear()
+    home = http.get("/connections/", follow_redirects=False)
+    assert home.status_code == 303 and home.headers["location"] == "/uber/connections/login"
+    browser_owner(http, subject="subject-unbound")
+    refused = http.get("/connections/", follow_redirects=False)
+    assert refused.status_code == 403 and "No Uber connection here belongs to this account." in refused.text
+
+
+def test_owner_links_open_the_window_without_the_intro(http):
+    page = http.get(owner_link(http))
+    assert page.status_code == 200 and '"autoStart": true' in page.text

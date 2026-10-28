@@ -198,7 +198,7 @@ async def main() -> int:
         await page.goto(link["url"])
         await page.get_by_role("button", name="Connect", exact=True).click()
         link["url"] = page.url
-        await page.click("#go")  # the page names the account and waits for the person to continue
+        # Owner-bound: the window opens on its own, without an intro to click through.
         frame_element = await page.wait_for_selector("iframe", timeout=60_000)
         frame = await frame_element.content_frame()
         assert frame is not None

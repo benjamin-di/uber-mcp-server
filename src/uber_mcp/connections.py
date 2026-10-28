@@ -83,7 +83,9 @@ class Connections:
             config.oidc.public_url,
             authorize=self.authorize,
             **({"clock": clock} if clock else {}),
-            text=replace(TEXT, reconnect=True, return_url=self.path),
+            # Every link is bound to the signed-in owner who just pressed Connect (authorize refuses any other), so
+            # the window opens at once: the intro only matters for a link handed to someone.
+            text=replace(TEXT, reconnect=True, auto_start=True, return_url=self.path),
         )
 
     def identity(self, request):
@@ -191,14 +193,16 @@ class Connections:
         return values[0]
 
     async def index(self, request):
+        if self.auth.identity(request) is None:
+            return RedirectResponse(self.path + "login", status_code=303)
         person = self.identity(request)
-        if person is None:
+        if person is None:  # signed in, but no Uber connection here is theirs: sending them to sign-in would loop
             return HTMLResponse(
                 self.page(
                     "My connections",
-                    "<p>Sign in to manage your Uber connection.</p>"
-                    f'<a href="{self.path}login">Continue with your identity provider</a>',
-                )
+                    "<p>No Uber connection here belongs to this account.</p>" + self.form("logout", "Sign out"),
+                ),
+                status_code=403,
             )
         state = self.status(person)
         if state["state"] == "connecting":
