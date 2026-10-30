@@ -291,9 +291,15 @@ async def run():
                                 "WebAuthn.getCredentials", {"authenticatorId": authenticator["authenticatorId"]}
                             )
                             assert len(credentials["credentials"]) == 1
-                            # Confirm enrollment through the provider API.
-                            response = admin.get(f"/api/users/{user['id']}/webauthn-credentials")
-                            assert response.status_code == 200 and response.json(), "Passkey enrollment did not finish"
+                            # Confirm enrollment through the provider API. The browser holds the
+                            # credential before the provider has stored it, so allow it to settle.
+                            end = time.monotonic() + 15
+                            while True:
+                                response = admin.get(f"/api/users/{user['id']}/webauthn-credentials")
+                                if response.status_code == 200 and response.json():
+                                    break
+                                assert time.monotonic() < end, "Passkey enrollment did not finish"
+                                await asyncio.sleep(0.25)
                             await context.clear_cookies()
                             await page.goto(origin + "/connections/")  # signed out: straight to sign-in
                             for _ in range(6):
@@ -355,6 +361,7 @@ async def run():
                         # A new UI derives connection health from the saved snapshot.
                         replacement = Connections(Accounts.from_settings(default.settings), client, config)
                         assert replacement.status({"account": "first"})["state"] == "connected"
+                        await page.locator("details.manage summary").click()
                         await page.get_by_role("button", name="Disconnect Uber", exact=True).click()
                         await page.get_by_text("Disconnected", exact=True).wait_for()
                         assert not accounts.settings_for(default.settings, "first").session_path.exists()

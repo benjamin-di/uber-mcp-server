@@ -231,7 +231,7 @@ async def main() -> int:
         await page.close()
         page = await context.new_page()
         await page.goto(link["url"])
-        await page.get_by_role("button", name="Cancel", exact=True).click()
+        await page.get_by_role("button", name="Cancel sign-in", exact=True).click()
         for _ in range(300):  # closing ends Chromium, x11vnc and Xvfb, which can take a few seconds
             if not open_windows(windows):
                 break

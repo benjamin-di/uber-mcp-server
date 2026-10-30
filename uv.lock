@@ -1346,16 +1346,16 @@ wheels = [
 
 [[package]]
 name = "signin-window"
-version = "0.4.11"
+version = "0.4.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "starlette" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0a/82/3debd5838322d70dff1842880675d7d35d00f1781d60061a75f91a77ea9b/signin_window-0.4.11.tar.gz", hash = "sha256:005eee6845739b4b62c71d0e6606ba11152602d01388222ceedaab72b0460855", size = 254829, upload-time = "2026-10-28T08:21:12.988Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/57/cbb5a498521fbd0d72a057dfa80fc4d449060754fab574ca6284bb31d75d/signin_window-0.4.17.tar.gz", hash = "sha256:8be95e18f9ff2a4487332883785720d8e5ee219a7912116ad49ca05d6056d646", size = 266573, upload-time = "2026-10-30T16:48:37.817Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/ef/a71e592fb78af577bc47756373210cfaf5e70b2fbf7a0f8b16be15fd65ae/signin_window-0.4.11-py3-none-any.whl", hash = "sha256:1b6547f67caa7d2519d8676d06fe84ce4483f7c024220c77e66fdba303d4c5db", size = 122091, upload-time = "2026-10-28T08:21:11.67Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/24/859b4accf31a343e6aa20e18afd6a5c84632840e577be467b1090f807a8a/signin_window-0.4.17-py3-none-any.whl", hash = "sha256:135f4c073409fc82c930f2703525aa0725f37ee90ff36f9d367e33d730259bf0", size = 128879, upload-time = "2026-10-30T16:48:36.742Z" },
 ]
 
 [package.optional-dependencies]
@@ -1431,7 +1431,7 @@ wheels = [
 
 [[package]]
 name = "uber-mcp"
-version = "0.4.7"
+version = "0.4.8"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -1458,7 +1458,7 @@ requires-dist = [
     { name = "fastmcp", specifier = "==4.0.10" },
     { name = "patchright", marker = "extra == 'login'", specifier = "==1.61.2" },
     { name = "platformdirs", specifier = ">=4.3" },
-    { name = "signin-window", extras = ["oidc"], specifier = ">=0.4.11,<0.5" },
+    { name = "signin-window", extras = ["oidc"], specifier = ">=0.4.17,<0.5" },
     { name = "tzdata", specifier = ">=2025.2" },
 ]
 provides-extras = ["login"]

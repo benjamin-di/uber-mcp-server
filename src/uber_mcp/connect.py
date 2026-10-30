@@ -37,33 +37,29 @@ TEXT = PageText(
     service="Uber",
     title="Connect your Uber account",
     help_html=(
-        "Sign in on Uber's own page below, as you usually do: with a code Uber sends you or your password (passkeys "
-        "do not work in this window). Pasting works too. The page runs in a browser on the server your assistant "
-        "uses; once you are signed in, your assistant can look up rides and, where it is allowed, book them after "
-        "asking you."
+        "Sign in to Uber in the remote browser below, using your password or a code from Uber. "
+        "Device passkeys do not work here. Paste with Ctrl+V or Cmd+V. This application keeps the signed-in session; "
+        "connecting does not change assistant permissions or booking approvals."
     ),
-    intro_html=(
-        "This link connects Uber for <b>{label}</b> on this assistant. Continue only if that is you: whoever signs "
-        "in here, their Uber account is the one the assistant will use."
-    ),
+    intro_html=("Connect Uber for <b>{label}</b>. Sign in to the Uber account you want this application to use."),
     button="Continue to Uber's sign-in",
     secure_host=r"(^|\.)uber\.com$",
     host_label="🔒 uber.com",
     starting="Opening Uber…",
 ).with_outcomes(
     connected=(
-        "<p class=ok>✓</p><h1>Connected</h1><p>Your Uber account ({rider}) is connected. You can close this page "
-        "and go back to your assistant.</p>"
+        "<p class=ok>✓</p><h1>Connection saved</h1><p>Your Uber sign-in is saved. You can close this page "
+        "and return to your assistant.</p>"
     ),
     wrong_account=(
-        "<h1>That's a different Uber account</h1><p>This assistant is already connected to another Uber account. "
-        "Sign in with that one, or ask the person who set it up to disconnect it first.</p>"
+        "<h1>That is a different Uber account</h1><p>Sign in to the Uber account already linked to this connection. "
+        "Disconnecting does not change which Uber account is linked.</p>"
     ),
     in_use=(
         "<h1>That Uber account is someone else's here</h1><p>It is already connected for another person on this "
         "server. Sign in with your own Uber account.</p>"
     ),
-    expired="<h1>This link has expired</h1><p>Ask your assistant to connect Uber again for a new link.</p>",
+    expired="<h1>This link has expired</h1><p>Return to Connections to start a new Uber sign-in.</p>",
 )
 
 

@@ -583,7 +583,7 @@ def test_old_forms_cannot_replace_new_attempt_disconnect_it_or_resume_after_disc
     for action in ("start", "disconnect"):
         refused = connection_action(http, action, data={"revision": first}, follow_redirects=False)
         assert refused.status_code == 409
-        assert '<a href="/uber/connections/">My connections</a>' in refused.text
+        assert '<a href="/uber/connections/">Back to Uber connection</a>' in refused.text
         assert http.get("/connections/").status_code == 200
     assert connection_action(http, "disconnect", data={"revision": second}, follow_redirects=False).status_code == 303
     current = http.get("/connections/status").json()["revision"]
@@ -621,7 +621,7 @@ def test_signed_out_home_goes_straight_to_sign_in_and_an_unbound_person_is_refus
     assert home.status_code == 303 and home.headers["location"] == "/uber/connections/login"
     browser_owner(http, subject="subject-unbound")
     refused = http.get("/connections/", follow_redirects=False)
-    assert refused.status_code == 403 and "No Uber connection here belongs to this account." in refused.text
+    assert refused.status_code == 403 and "This sign-in cannot manage an Uber connection." in refused.text
 
 
 def test_owner_links_open_the_window_without_the_intro(http):

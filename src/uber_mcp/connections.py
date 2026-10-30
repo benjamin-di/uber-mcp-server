@@ -11,6 +11,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
 import anyio.to_thread
+from signin_window.connections import disconnect_confirmation, timestamp
+from signin_window.connections import page as connection_page
 from signin_window.oidc import BrowserAuth, OIDCConfig
 from signin_window.state import PrivateStateBusyError, exclusive_lock
 from starlette.applications import Starlette
@@ -22,7 +24,6 @@ from .accounts import valid_id
 from .config import ConfigError
 from .connect import TEXT, ConnectFlow
 from .errors import UberError
-from .state import iso
 
 
 @dataclass(frozen=True)
@@ -129,7 +130,9 @@ class Connections:
             return {
                 "state": control["state"],
                 "revision": control["epoch"],
-                "label": "Disconnect needs attention" if control["state"] == "disconnecting" else "Disconnected",
+                "label": "Access stopped — finish disconnecting"
+                if control["state"] == "disconnecting"
+                else "Disconnected",
                 "account": session.get("account"),
                 "saved_at": session.get("saved_at"),
             }
@@ -176,7 +179,27 @@ class Connections:
             if revision is None:
                 raise ValueError("Account forms require an observed revision")
             field = f'<input type=hidden name=revision value="{html.escape(revision, quote=True)}">'
-        return f'<form method=post action="{self.path}{action}">{field}<button>{html.escape(label)}</button></form>'
+        kind = (
+            "danger"
+            if action == "disconnect"
+            else "quiet"
+            if action == "logout"
+            else "secondary"
+            if label == "Reconnect"
+            else "primary"
+        )
+        form = (
+            f'<form method=post action="{self.path}{action}">{field}'
+            f'<button class="{kind}">{html.escape(label)}</button></form>'
+        )
+        if action == "disconnect" and label.startswith("Disconnect"):
+            return disconnect_confirmation(
+                form,
+                "Uber",
+                "This stops this application from using your Uber connection. "
+                "It does not cancel rides, delete booking history or change your booking limits.",
+            )
+        return form
 
     @staticmethod
     async def expected_revision(request):
@@ -199,8 +222,9 @@ class Connections:
         if person is None:  # signed in, but no Uber connection here is theirs: sending them to sign-in would loop
             return HTMLResponse(
                 self.page(
-                    "My connections",
-                    "<p>No Uber connection here belongs to this account.</p>" + self.form("logout", "Sign out"),
+                    "Uber connection",
+                    "<p>This sign-in cannot manage an Uber connection. Sign in with another account, "
+                    "or ask your administrator to check access.</p>" + self.form("logout", "Sign out of Connections"),
                 ),
                 status_code=403,
             )
@@ -210,26 +234,32 @@ class Connections:
         elif state["state"] == "saving":
             controls = "<p>You can close this page while the connection is saved.</p>"
         elif state["state"] == "disconnecting":
-            controls = self.form("disconnect", "Retry disconnect", revision=state["revision"])
+            controls = self.form("disconnect", "Finish disconnecting", revision=state["revision"])
         else:
             controls = self.form(
                 "start", "Reconnect" if state["state"] == "connected" else "Connect", revision=state["revision"]
             )
         if state["state"] not in ("disconnected", "disconnecting"):
             controls += self.form("disconnect", "Disconnect Uber", revision=state["revision"])
+        account = state.get("account") or (
+            "Your Uber account will appear after sign-in"
+            if state["state"] in ("connecting", "saving")
+            else "No Uber account connected"
+        )
         body = (
-            f"<p>Signed in as {html.escape(person['name'])}</p><article><h2>Uber</h2>"
+            f"<p class=muted>Signed in to Connections as {html.escape(person['name'])}</p><article><h2>Uber</h2>"
             f"<p role=status>{html.escape(state['label'])}</p>"
-            f"<p>{html.escape(state.get('account') or 'No verified rider yet')}</p>"
-            f"<p>Last saved: {html.escape(iso(state.get('saved_at')) or 'Not saved yet')}</p>"
-            f"<p>Last verified: {html.escape(iso(state.get('verified_at')) or 'Not verified in this run')}</p>"
-            "<p>Saved credentials are checked when Uber is used.</p>" + controls + "</article>"
-            "<p>Connecting Uber does not grant an agent access or change booking limits and confirmations. "
-            "Manage agent permissions separately.</p>" + self.form("logout", "Sign out of this page")
+            f"<p>{html.escape(account)}</p>"
+            + (timestamp(state["saved_at"], label="Saved") if state.get("saved_at") else "")
+            + (timestamp(state["verified_at"]) if state.get("verified_at") else "")
+            + "<p>Uber access is checked when used.</p>"
+            + controls
+            + "</article>"
+            "<p class=muted>Connecting Uber does not give an assistant permission to use it or change "
+            "booking limits and confirmations.</p>" + self.form("logout", "Sign out of Connections")
         )
         return HTMLResponse(
-            self.page("My connections", body),
-            headers={"Refresh": "2"} if state["state"] in ("connecting", "saving") else {},
+            self.page("Uber connection", body, refresh=state["state"] in ("connecting", "saving")),
         )
 
     async def state(self, request):
@@ -237,8 +267,11 @@ class Connections:
         return JSONResponse(self.status(person)) if person else Response("Sign-in required", status_code=401)
 
     def recovery(self, message, *, status_code):
-        body = f'<p>{html.escape(message)}</p><p><a href="{html.escape(self.path, quote=True)}">My connections</a></p>'
-        return HTMLResponse(self.page("My connections", body), status_code=status_code)
+        body = (
+            f'<p>{html.escape(message)}</p><p><a href="{html.escape(self.path, quote=True)}">'
+            "Back to Uber connection</a></p>"
+        )
+        return HTMLResponse(self.page("Uber connection", body), status_code=status_code)
 
     async def start(self, request):
         return await self.mutate(request, "start")
@@ -268,17 +301,20 @@ class Connections:
                     await anyio.to_thread.run_sync(lambda held=link: self.flow.relay.cancel(held))
         except (ValueError, PrivateStateBusyError):
             return self.recovery(
-                "Connections changed or another action is running. Return to My connections to check its state.",
+                "This connection changed, or another action is still running. "
+                "Return to your Uber connection and check its status before trying again.",
                 status_code=409,
             )
         except UberError:
             return self.recovery(
-                "The connection operation needs attention. Return to My connections to check its state.",
+                "We could not finish this change. "
+                "Return to your Uber connection and check its status before trying again.",
                 status_code=409 if operation == "start" else 503,
             )
         except OSError:
             return self.recovery(
-                "The connection operation needs attention. Return to My connections to check its state.",
+                "We could not finish this change. "
+                "Return to your Uber connection and check its status before trying again.",
                 status_code=503,
             )
         return RedirectResponse(self.path, status_code=303)
@@ -312,19 +348,5 @@ class Connections:
 
         return protected
 
-    @staticmethod
-    def page(title, body):
-        return (
-            '<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>'
-            + title
-            + (
-                "</title><style>body{font:17px system-ui;margin:0;background:#f5f6f8;color:#16202a}"
-                "main{max-width:620px;margin:32px auto;padding:20px}article{background:white;border:1px solid #ddd;"
-                "padding:22px;border-radius:16px}button,a{display:inline-block;margin:8px 0;padding:12px;"
-                "font:inherit}form{display:inline}p{overflow-wrap:anywhere}</style><main><h1>"
-                + title
-                + "</h1>"
-                + body
-                + "</main>"
-            )
-        )
+    def page(self, title, body, *, refresh=False):
+        return connection_page(title, body, refresh=refresh, login_url=self.path + "login")
