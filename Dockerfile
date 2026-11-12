@@ -25,13 +25,15 @@ RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES ./
 COPY src ./src
+COPY scripts/embed-build-identity.py /tmp/embed-build-identity.py
+ARG VERSION
+ARG VCS_REF
+RUN python /tmp/embed-build-identity.py "$VERSION" "$VCS_REF"
 RUN --mount=from=uv,source=/uv,target=/usr/local/bin/uv \
     uv pip install --system --compile-bytecode --no-deps . \
  && rm -rf /app/src \
  && install -d -o 1000 -g 1000 -m 0700 /state
 
-ARG VERSION=development
-ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 ARG SOURCE_URL=https://github.com/benjamin-di/uber-mcp-server
 LABEL org.opencontainers.image.title="uber-mcp" \

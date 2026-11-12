@@ -9,20 +9,24 @@ import secrets
 import threading
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from conftest import COOKIES, make_service
 from fixtures import uber as fx
 from signin_window import relay as relay_module
 from signin_window.client import STATIC, LoginBusy
+from signin_window.connections import SCRIPT_SOURCE
 from signin_window.oidc import OIDCConfig
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from uber_mcp import accounts, connect, server
+from uber_mcp import accounts, connect, server, web_identity
+from uber_mcp import connections as connections_module
 from uber_mcp.auth import require_bearer
 from uber_mcp.config import ConfigError, Settings
 from uber_mcp.connections import Connections, ConnectionsConfig
+from uber_mcp.identity import BuildIdentity
 from uber_mcp.server import Accounts
 from uber_mcp.session import Session
 
@@ -337,7 +341,7 @@ def test_a_sign_in_lands_in_the_links_account_only_and_is_proven(http, login, re
     assert http.get(path + "/state").json() == {"state": "waiting", "host": "auth.uber.com"}
     main_before = Session(registry.settings.session_path, registry.settings.session_key).status()["generation"]
     login.sign_in("login-00000000000", uuid=OTHER_RIDER, name="Sam")
-    done = http.get(path + "/state").json()
+    done = settled_state(http, path)
     assert done["state"] == "connected" and done["rider"] == "S•••"
     assert second_session(registry).account == {"uuid": OTHER_RIDER, "name": "Sam"}
     status = tool(http, "uber_status", "second")
@@ -368,13 +372,13 @@ def test_a_different_rider_than_the_account_has_is_refused(http, login, registry
     path = owner_link(http)
     http.post(path + "/start", json={})
     login.sign_in("login-00000000000", uuid=fx.RIDER.replace("1", "3"))
-    assert http.get(path + "/state").json()["state"] == "wrong_account"
+    assert settled_state(http, path)["state"] == "wrong_account"
     assert second_session(registry).account["uuid"] == OTHER_RIDER  # untouched
     # The same rider again is a fresh sign-in of that account: accepted.
     assert http.get(path).status_code == 200
     http.post(path + "/start", json={})
     login.sign_in("login-00000000001", uuid=OTHER_RIDER)
-    assert http.get(path + "/state").json()["state"] == "connected"
+    assert settled_state(http, path)["state"] == "connected"
     assert Session(session.path).status()["generation"] == 2
 
 
@@ -382,7 +386,7 @@ def test_a_rider_another_account_holds_is_refused(http, login, registry):
     path = owner_link(http)
     http.post(path + "/start", json={})
     login.sign_in("login-00000000000", uuid=fx.RIDER)  # the default account's rider
-    assert http.get(path + "/state").json()["state"] == "in_use"
+    assert settled_state(http, path)["state"] == "in_use"
     assert second_session(registry).account is None
 
 
@@ -555,7 +559,7 @@ def test_disconnect_retains_history_and_reconnects_only_from_owner_page(http, re
     path = response.headers["location"].removeprefix("https://example.com/uber")
     http.post(path + "/start", json={})
     login.sign_in("login-00000000000", uuid=fx.RIDER)
-    assert http.get(path + "/state").json()["state"] == "connected"
+    assert settled_state(http, path)["state"] == "connected"
     assert registry.default.session.connection.read()["state"] == "active"
     assert tool(http, "uber_status", "main")["signed_in"]
 
@@ -627,3 +631,70 @@ def test_signed_out_home_goes_straight_to_sign_in_and_an_unbound_person_is_refus
 def test_owner_links_open_the_window_without_the_intro(http):
     page = http.get(owner_link(http))
     assert page.status_code == 200 and '"autoStart": true' in page.text
+
+
+def test_owned_http_pages_keep_one_escaped_host_footer_and_form_policy(monkeypatch, request):
+    build = BuildIdentity("uber", '1.2.3" <dev>', "a" * 40)
+    monkeypatch.setattr(web_identity, "build_identity", lambda: build)
+    http = request.getfixturevalue("http")
+    response = http.get("/connections/")
+    assert response.status_code == 200
+    assert response.text.count('<footer id="connection-identity"') == 1
+    assert 'data-service="uber"' in response.text
+    assert 'data-version="1.2.3&quot; &lt;dev&gt;"' in response.text
+    assert 'data-source-revision="' + build.source_revision + '"' in response.text
+    assert "user-select:text" in response.text and "<dev>" not in response.text
+    assert 'name=revision value="' in response.text and 'action="/uber/connections/start"' in response.text
+    assert response.headers["cache-control"] == "no-store"
+    assert SCRIPT_SOURCE in response.headers["content-security-policy"]
+    browser_owner(http, subject="synthetic-unbound")
+    refused = http.get("/connections/")
+    assert refused.status_code == 403
+    assert refused.text.count('<footer id="connection-identity"') == 1
+
+
+@pytest.mark.skipif(
+    not web_identity.identity_kwargs(connections_module.BrowserAuth), reason="Pinned renderer has no host identity API"
+)
+def test_shared_browser_auth_http_outcomes_identify_the_host_without_private_details(monkeypatch, request):
+    build = BuildIdentity("uber", '1.2.3" <dev>', "a" * 40)
+    monkeypatch.setattr(web_identity, "build_identity", lambda: build)
+    http = request.getfixturevalue("http")
+    portal = PORTALS[-1]
+    monkeypatch.setattr(
+        portal.auth.client, "load_server_metadata", AsyncMock(side_effect=ValueError("synthetic-private-provider"))
+    )
+    for target, status in [
+        ("/connections/login", 503),
+        ("/connections/callback?code=synthetic-private-code&state=invalid", 403),
+    ]:
+        response = http.get(target, follow_redirects=False)
+        assert response.status_code == status
+        assert response.text.count('<footer id="connection-identity"') == 1
+        assert 'data-service="uber"' in response.text
+        assert 'data-version="1.2.3&quot; &lt;dev&gt;"' in response.text
+        assert 'data-source-revision="' + build.source_revision + '"' in response.text
+        assert "<dev>" not in response.text and "synthetic-private-" not in response.text
+        assert response.headers["cache-control"] == "no-store"
+        assert SCRIPT_SOURCE in response.headers["content-security-policy"]
+
+
+@pytest.mark.skipif(
+    not web_identity.identity_kwargs(connect.PageText), reason="Pinned renderer has no host identity API"
+)
+def test_connections_preserves_host_identity_when_it_configures_the_relay(monkeypatch, request):
+    build = BuildIdentity("uber", '1.2.3" <dev>', "a" * 40)
+    monkeypatch.setattr(web_identity, "build_identity", lambda: build)
+    http = request.getfixturevalue("http")
+    path = owner_link(http)
+    for target, status in [(path, 200), ("/connect/" + "x" * 32, 404)]:
+        response = http.get(target)
+        assert response.status_code == status
+        assert response.text.count('<footer id="page-identity"') == 1
+        assert 'data-service="uber"' in response.text
+        assert 'data-version="1.2.3&quot; &lt;dev&gt;"' in response.text
+        assert 'data-source-revision="' + build.source_revision + '"' in response.text
+        assert "<dev>" not in response.text and "user-select:text" in response.text
+        assert response.headers["cache-control"] == "no-store"
+    viewer = http.get(path + "/novnc/vnc.html")
+    assert viewer.content == VNC_HTML.replace(b"</head>", relay_module.PASTE_TAG + b"\n</head>")

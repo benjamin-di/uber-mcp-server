@@ -1,6 +1,6 @@
 [project]
 name = "uber-mcp"
-version = "0.4.8"
+version = "0.5.1"
 description = "Unofficial MCP server for Uber rides: places, live fares, ride requests behind a confirm step, trip status and history"
 readme = "README.md"
 license = "MIT"
@@ -27,7 +27,7 @@ dependencies = [
     "platformdirs>=4.3",
     "tzdata>=2025.2",
     # The sign-in window and its links: the login service, the relay, the paste add-on.
-    "signin-window[oidc]>=0.4.17,<0.5",
+    "signin-window[oidc]>=0.8.1,<0.9",
 ]
 
 [project.urls]
@@ -64,6 +64,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/uber_mcp", "src/uber_login"]
+
+[tool.hatch.build]
+artifacts = ["src/uber_mcp/build_identity.json"]
 
 [tool.ruff]
 line-length = 120

@@ -104,6 +104,10 @@ jobs:
             bash scripts/build-image.sh "$candidate" Dockerfile "$VCS_REF" "$BUILD_DATE" "$REG/$SERVER_IMAGE:buildcache"
           digest="$(docker buildx imagetools inspect "$candidate" --format '{{json .Manifest}}' | jq -er .digest)"
           image="$REG/$SERVER_IMAGE@$digest"
+          product_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            --mount "type=bind,src=$PWD/scripts/check-build-identity.py,dst=/identity-acceptance.py,readonly" \
+            --entrypoint python "$image" -I /identity-acceptance.py "$product_version" "$VCS_REF"
           docker pull -q "$image" >/dev/null
           # Smoke: the server builds with a sealed session and booking caps without a network, refuses HTTP
           # without a bearer, and answers its own health check (the image's HEALTHCHECK) on a read-only root as uid 1000.
@@ -133,6 +137,10 @@ jobs:
           digest="$(docker buildx imagetools inspect "$candidate" --format '{{json .Manifest}}' | jq -er .digest)"
           docker pull -q "$REG/$LOGIN_IMAGE@$digest" >/dev/null
           image="$REG/$LOGIN_IMAGE@$digest"
+          product_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            --mount "type=bind,src=$PWD/scripts/check-build-identity.py,dst=/identity-acceptance.py,readonly" \
+            --entrypoint python "$image" -I /identity-acceptance.py "$product_version" "$VCS_REF"
           # Smoke: the browser, display, remote-desktop server, viewer and CJK fonts are there; the service
           # refuses to start without its bearer; it never runs as root.
           docker run --rm --network none --entrypoint sh "$image" -c '
@@ -179,4 +187,9 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes
+        run: |
+          # The notes are the annotated tag's message: the version's CHANGELOG.md entry (publish-public).
+          object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq 'select(.object.type == "tag") | .object.sha')
+          test -n "$object" || { echo "::error::$TAG is not an annotated tag carrying release notes"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" --jq .message > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"

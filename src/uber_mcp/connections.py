@@ -24,6 +24,7 @@ from .accounts import valid_id
 from .config import ConfigError
 from .connect import TEXT, ConnectFlow
 from .errors import UberError
+from .web_identity import identity_kwargs, legacy_footer
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,12 @@ class Connections:
             raise ConfigError("Browser state must use this application's configured private state directory")
         self.prefix = urlsplit(config.oidc.public_url).path.rstrip("/")
         self.path = self.prefix + "/connections/"
-        self.auth = BrowserAuth(config.oidc, **({"clock": clock} if clock else {}), transport=oidc_transport)
+        self.auth = BrowserAuth(
+            config.oidc,
+            **({"clock": clock} if clock else {}),
+            transport=oidc_transport,
+            **identity_kwargs(BrowserAuth),
+        )
         self.flow = flow_factory(
             registry,
             client,
@@ -349,4 +355,9 @@ class Connections:
         return protected
 
     def page(self, title, body, *, refresh=False):
-        return connection_page(title, body, refresh=refresh, login_url=self.path + "login")
+        metadata = identity_kwargs(connection_page)
+        markup = connection_page(title, body, refresh=refresh, login_url=self.path + "login", **metadata)
+        if metadata:
+            return markup
+        before, closing, after = markup.rpartition("</main>")
+        return before + legacy_footer() + closing + after

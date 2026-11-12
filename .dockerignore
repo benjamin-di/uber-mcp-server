@@ -8,8 +8,10 @@
 **/.ruff_cache
 **/*.pyc
 tests
-scripts
+scripts/*
+!scripts/embed-build-identity.py
 docs
 cookies.txt
 *.cookies.txt
 .env
+**/build_identity.json

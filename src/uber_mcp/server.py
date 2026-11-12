@@ -41,7 +41,8 @@ from .config import Settings
 from .connect import ConnectFlow
 from .connections import Connections, ConnectionsConfig
 from .errors import AGENT_INPUT_CODES, DECISION_CODES, UberError
-from .logs import ToolCallLog
+from .identity import build_identity
+from .logs import ToolCallLog, stamp_handlers, uvicorn_log_config
 from .places import Places, view
 from .session import Session
 from .state import StateStore, iso
@@ -470,6 +471,7 @@ def create_server(
 
     @contextlib.asynccontextmanager
     async def lifespan(_mcp):
+        stamp_handlers()
         if flow is None:
             yield {}
         else:
@@ -478,7 +480,7 @@ def create_server(
 
     mcp = FastMCP(
         "uber",
-        version=__version__,  # serverInfo reports uber-mcp's version, not FastMCP's
+        version=build_identity().version,  # serverInfo reports this installation, not FastMCP's
         instructions=INSTRUCTIONS,
         auth=auth,
         mask_error_details=True,
@@ -760,7 +762,7 @@ def serve_http(settings: Settings, *, host: str, port: int) -> None:
         transport="streamable-http",
         host=host,
         port=port,
-        uvicorn_config=UVICORN,
+        uvicorn_config={**UVICORN, "log_config": uvicorn_log_config()},
         # No banner: it advertises a hosting service and asks PyPI for FastMCP updates; only Uber is contacted.
         show_banner=False,
         **HTTP_OPTIONS,

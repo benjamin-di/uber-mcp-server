@@ -59,13 +59,15 @@ RUN uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirem
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES ./
 COPY src ./src
+COPY scripts/embed-build-identity.py /tmp/embed-build-identity.py
+ARG VERSION
+ARG VCS_REF
+RUN python /tmp/embed-build-identity.py "$VERSION" "$VCS_REF"
 RUN uv pip install --system --compile-bytecode --no-deps . && rm -rf /app/src
 
 RUN python -c "from pathlib import Path; import patchright; p = Path(patchright.__file__).parent / 'driver' / 'node'; p.unlink(); p.symlink_to('/usr/local/bin/browser-node')" \
  && python -m patchright --version
 
-ARG VERSION=development
-ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 ARG SOURCE_URL=https://github.com/benjamin-di/uber-mcp-server
 LABEL org.opencontainers.image.title="uber-mcp-login" \

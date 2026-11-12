@@ -114,16 +114,35 @@ class ConnectionState:
                 self.save({**current, "state": "disconnected"})
 
 
-if __name__ == "__main__":
-    import argparse
+def main(argv=None):
+    from . import logs
+    from .cli import _diagnostic
 
-    parser = argparse.ArgumentParser(description="Initialize an existing account's connection controls once")
+    logs.setup()
+    try:
+        return initialize(argv)
+    except Exception as error:
+        _diagnostic(
+            f"Connection initialization failed; check UBER_STATE_DIR and the account selection ({type(error).__name__})"
+        )
+        return 1
+
+
+def initialize(argv=None):
+    from .cli import _ArgumentParser
+
+    parser = _ArgumentParser(description="Initialize an existing account's connection controls once")
     parser.add_argument("--initialize", action="store_true", required=True)
     parser.add_argument("--account", default="")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     folder = Path(os.environ.get("UBER_STATE_DIR", "~/.local/state/uber-mcp")).expanduser()
     if args.account and args.account != os.environ.get("UBER_DEFAULT_ACCOUNT", "default"):
         from .accounts import check_id
 
         folder = folder / "accounts" / check_id(args.account)
     ConnectionState(folder, require_existing=False).ensure()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

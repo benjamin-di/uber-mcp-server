@@ -309,7 +309,8 @@ persistent disconnect controls. My connections also lets the owner reconnect wit
   (from `X-Forwarded-For`, which the proxy must set): after 20 in ten minutes that address gets 429 instead of 404
   (a real link keeps working).
 - **It only puts a session in.** Once the login service has proven the sign-in, the server stores it as that
-  account's session only after independently verifying a private staged candidate with Uber; the page shows only the first letter of the rider's name.
+  account's session only after independently verifying a private staged candidate with Uber. The page confirms
+  "Connection saved" and tells the person they can close it and return to their assistant.
   Nothing under `/connect` shows or returns a session. A sign-in as a different Uber rider than the account already
   has (even an expired one) is refused, and so is a rider another account on this server holds; the operator can
   still sign an account in with `uber-mcp admin login`.
@@ -484,6 +485,18 @@ send. [docs/uber-web-api.md](https://github.com/benjamin-di/uber-mcp-server/blob
 ## Development
 
 See [CONTRIBUTING.md](https://github.com/benjamin-di/uber-mcp-server/blob/main/CONTRIBUTING.md). Tests never contact Uber.
+
+Connections pages and retained diagnostics identify the installed application's product version and full source
+revision. Native MCP initialization advertises the same product version. The image digest remains separate
+deployment evidence. Host identity is also forwarded to compatible `signin-window` page constructors, including
+browser sign-in outcomes, sign-in links and the plain login viewer. The locked 0.7.1 release predates that API:
+connection pages retain their application footer, while those shared shells gain it when a compatible renderer
+release is adopted. Source-candidate checks verify the forwarding without changing the lock.
+
+Both images and Python distribution publishers run `scripts/embed-build-identity.py VERSION VCS_REF` before
+installation. `VERSION` must match `pyproject.toml`; `VCS_REF` is the full producing commit (the public export commit
+for public distributions). Installed artifacts reject missing or conflicting stamps. Source and matching editable
+development runs explicitly report an unknown revision. Runtime environment variables cannot relabel an artifact.
 
 ## Credits
 

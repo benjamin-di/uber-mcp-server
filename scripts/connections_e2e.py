@@ -285,6 +285,7 @@ async def run():
                             response = await context.request.post(issuer + "/api/one-time-access-token/" + token)
                             assert response.ok
                             await page.goto(issuer + "/settings/account")
+                            print("PHASE: passkey enrollment", flush=True)
                             await page.get_by_role("button", name=re.compile("add passkey", re.I)).first.click()
                             await page.wait_for_timeout(700)
                             credentials = await cdp.send(
@@ -301,6 +302,7 @@ async def run():
                                 assert time.monotonic() < end, "Passkey enrollment did not finish"
                                 await asyncio.sleep(0.25)
                             await context.clear_cookies()
+                            print("PHASE: owner OIDC authentication", flush=True)
                             await page.goto(origin + "/connections/")  # signed out: straight to sign-in
                             for _ in range(6):
                                 await page.wait_for_timeout(500)
@@ -339,8 +341,8 @@ async def run():
                         try:
                             await frame.locator("html.noVNC_connected").wait_for(timeout=30000)
                         except Exception:
-                            print("WINDOW", [(w.state, w.error) for w in windows._windows.values()], flush=True)
-                            print("SCREEN", (await page.locator("body").inner_text())[:900], flush=True)
+                            print("WINDOW states", [w.state for w in windows._windows.values()], flush=True)
+                            # No page body, login link, provider log or token-bearing trace is retained.
                             raise
                         await page.reload()
                         frame = page.frame_locator("iframe")

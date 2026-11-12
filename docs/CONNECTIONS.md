@@ -117,7 +117,7 @@ saved credentials; temporary sign-in windows are recreated if needed.
 
 Disconnect first persists a new account revision and access barrier, then removes
 the saved session and closes pending windows. Cleanup failure remains blocked
-and offers Retry disconnect. New MCP calls, cached account admission, keepalive,
+and offers "Finish disconnecting". New MCP calls, cached account admission, keepalive,
 reservation monitoring and late session publication respect this barrier even
 after restart or removal of browser UI configuration. Calls admitted before
 disconnect may complete. Disconnect does not cancel a ride or reservation,

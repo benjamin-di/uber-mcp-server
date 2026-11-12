@@ -27,6 +27,7 @@ from . import accounts
 from .errors import UberError
 from .fsio import locked
 from .session import Session, from_jar, mask_name
+from .web_identity import identity_kwargs
 
 if TYPE_CHECKING:
     from .server import Accounts, UberService
@@ -68,6 +69,7 @@ class ConnectFlow:
         self, registry: Accounts, client: LoginClient, public_url: str, *, authorize, clock=time.time, text=TEXT
     ) -> None:
         self.registry = registry
+        text = replace(text, **identity_kwargs(type(text)))
         # The relay runs one hook at a time: the rider checks and the write below go together.
         self.relay = Relay(
             client,

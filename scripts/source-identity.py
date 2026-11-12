@@ -40,7 +40,7 @@ def source_identity(root: Path) -> dict:
     }
 
 
-LOCAL = {".git", ".venv", ".deps", ".artifacts", ".pytest_cache", ".ruff_cache", "__pycache__"}
+LOCAL = {".git", ".venv", ".deps", ".artifacts", "reports", ".pytest_cache", ".ruff_cache", "__pycache__"}
 
 
 def _walk_digest(root: Path) -> str:

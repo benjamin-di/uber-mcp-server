@@ -26,14 +26,41 @@ import sys
 import time
 import urllib.request
 
-from . import __version__
 from .config import ConfigError, Settings
+from .identity import build_identity, log_fields
+
+
+def _diagnostic(message: str) -> None:
+    """Attribute intentional diagnostics without touching command results or protocol stdout."""
+    try:
+        fields = " ".join(f"{key}={value}" for key, value in log_fields().items())
+    except Exception:
+        print("service=uber identity=unavailable startup refused: build identity unavailable", file=sys.stderr)
+        return
+    for line in message.splitlines():
+        print(f"{fields} {line}", file=sys.stderr)
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        # argparse's message can contain the rejected value (including credentials).
+        _diagnostic(self.format_usage().rstrip())
+        _diagnostic("uber-mcp: invalid arguments; use --help.")
+        self.exit(2)
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except Exception as exc:
+        _diagnostic(f"uber-mcp: command failed ({type(exc).__name__}).")
+        return 1
+
+
+def _main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    parser = argparse.ArgumentParser(prog="uber-mcp", description="Unofficial MCP server for Uber rides.")
-    parser.add_argument("--version", action="version", version=f"uber-mcp {__version__}")
+    parser = _ArgumentParser(prog="uber-mcp", description="Unofficial MCP server for Uber rides.")
+    parser.add_argument("--version", action="version", version=f"uber-mcp {build_identity().version}")
     commands = parser.add_subparsers(dest="command")
     serve = commands.add_parser("serve", help="serve over streamable HTTP (needs MCP_BEARER_TOKEN)")
     serve.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1)")
@@ -90,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = Settings.from_env()
     except ConfigError as exc:
-        print(f"uber-mcp: {exc}", file=sys.stderr)
+        _diagnostic(f"uber-mcp: {exc}")
         return 2
     if options.command == "login":
         return _login(settings, options.browser)
@@ -112,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             serve_stdio(settings)
     except AuthConfigError as exc:
-        print(f"uber-mcp: {exc}", file=sys.stderr)
+        _diagnostic(f"uber-mcp: {exc}")
         return 1
     return 0
 
@@ -134,7 +161,7 @@ def _save(settings: Settings, result: dict) -> int:
             result["account"], result["user_agent"], result["cookies"]
         )
     except (UberError, KeyError, TypeError):
-        print("uber-mcp: Uber's answer did not contain a usable session; try again.", file=sys.stderr)
+        _diagnostic("uber-mcp: Uber's answer did not contain a usable session; try again.")
         return 1
     name = mask_name(str((result.get("account") or {}).get("name") or ""))
     print(f"Signed in as {name}. Saved to {settings.session_path} (generation {generation}).")
@@ -146,11 +173,10 @@ def _login(settings: Settings, browser: str) -> int:
     try:
         from uber_login.window import NotProven, WindowClosed, sign_in
     except ImportError:
-        print(
+        _diagnostic(
             "uber-mcp: signing in needs the browser extra. Run it as\n"
-            '  uvx --from "uber-mcp[login] @ git+https://github.com/benjamin-di/uber-mcp-server" uber-mcp login\n'
-            'or install it with: pip install "uber-mcp[login] @ git+https://github.com/benjamin-di/uber-mcp-server"',
-            file=sys.stderr,
+            '  uvx --from "uber-mcp[login]" uber-mcp login\n'
+            'or install it with: pip install "uber-mcp[login]"'
         )
         return 2
     profile = settings.state_dir / "browser"
@@ -159,19 +185,17 @@ def _login(settings: Settings, browser: str) -> int:
     try:
         result = asyncio.run(sign_in(profile=str(profile), channel="chrome" if browser == "chrome" else None))
     except WindowClosed:
-        print("uber-mcp: the window was closed before signing in; nothing was saved.", file=sys.stderr)
+        _diagnostic("uber-mcp: the window was closed before signing in; nothing was saved.")
         return 1
     except NotProven:
-        print("uber-mcp: Uber's pages said signed in but the account could not be read; try again.", file=sys.stderr)
+        _diagnostic("uber-mcp: Uber's pages said signed in but the account could not be read; try again.")
         return 1
     except Exception as exc:  # patchright reports a missing browser as a plain Error
-        print(f"uber-mcp: the browser could not start ({type(exc).__name__}).", file=sys.stderr)
+        _diagnostic(f"uber-mcp: the browser could not start ({type(exc).__name__}).")
         if browser == "chrome":
-            print(
-                "Install Google Chrome, or use --browser chromium after `patchright install chromium`.", file=sys.stderr
-            )
+            _diagnostic("Install Google Chrome, or use --browser chromium after `patchright install chromium`.")
         else:
-            print("Run `patchright install chromium` first.", file=sys.stderr)
+            _diagnostic("Run `patchright install chromium` first.")
         return 1
     return _save(settings, result)
 
@@ -198,7 +222,7 @@ def _account_settings(settings: Settings, account_id: str | None) -> Settings | 
     try:
         return accounts.settings_for(settings, account_id)
     except UberError:
-        print(f"uber-mcp: no account {account_id} (`uber-mcp admin account list`).", file=sys.stderr)
+        _diagnostic(f"uber-mcp: no account {account_id} (`uber-mcp admin account list`).")
         return None
 
 
@@ -248,15 +272,14 @@ def _admin(settings: Settings, options: argparse.Namespace) -> int:
             print(json.dumps(service.ledger.attempts(), indent=2))
             return 0
         if not options.attempt or not (options.reservation_id or options.not_booked):
-            print(
-                "Specify an attempt and --reservation-id ID or --not-booked, after independently checking Uber.",
-                file=sys.stderr,
+            _diagnostic(
+                "Specify an attempt and --reservation-id ID or --not-booked, after independently checking Uber."
             )
             return 2
         try:
             service.booking.resolve_reservation(options.attempt, options.reservation_id)
         except UberError as exc:
-            print(f"uber-mcp: {exc.code}", file=sys.stderr)
+            _diagnostic(f"uber-mcp: {exc.code}")
             return 1
         print("Attempt resolved. No booking or cancellation was submitted.")
         return 0
@@ -299,14 +322,13 @@ def _admin_account(settings: Settings, options: argparse.Namespace) -> int:
                   "them on its next call." if caps else f"{options.id}: no caps; it is read-only now.")  # fmt: skip
             return 0
         if not options.yes:
-            print(f"uber-mcp: this deletes account {options.id}'s session, ledger and audit log; add --yes.",
-                  file=sys.stderr)  # fmt: skip
+            _diagnostic(f"uber-mcp: this deletes account {options.id}'s session, ledger and audit log; add --yes.")
             return 2
         accounts.remove(settings, options.id)
         print(f"Removed account {options.id}: its session, ledger and audit log are deleted.")
         return 0
     except accounts.AccountConfigError as exc:
-        print(f"uber-mcp: {exc}", file=sys.stderr)
+        _diagnostic(f"uber-mcp: {exc}")
         return 2
 
 
@@ -314,13 +336,13 @@ def _admin_login(settings: Settings, layout: str, minutes: int) -> int:
     from signin_window.client import LoginClient, LoginUnavailable
 
     if not settings.login_url or not settings.login_token:
-        print("uber-mcp: UBER_LOGIN_URL and UBER_LOGIN_TOKEN are not set (no login service).", file=sys.stderr)
+        _diagnostic("uber-mcp: UBER_LOGIN_URL and UBER_LOGIN_TOKEN are not set (no login service).")
         return 2
     client = LoginClient(settings.login_url, settings.login_token)
     try:
         login = client.start(layout)
     except LoginUnavailable as exc:
-        print(f"uber-mcp: the login service did not start a sign-in ({exc}).", file=sys.stderr)
+        _diagnostic(f"uber-mcp: the login service did not start a sign-in ({type(exc).__name__}).")
         return 1
     print("Ask the person to open this page and sign in to Uber there (it works once, for this sign-in only):")
     print(f"  {settings.login_view_url}/view/{login['id']}?t={login['view_token']}", flush=True)
@@ -331,19 +353,19 @@ def _admin_login(settings: Settings, layout: str, minutes: int) -> int:
             if state == "signed_in":
                 result = client.result(login["id"])
                 if result is None:
-                    print("uber-mcp: the sign-in finished but its session was already taken.", file=sys.stderr)
+                    _diagnostic("uber-mcp: the sign-in finished but its session was already taken.")
                     return 1
                 return _save(settings, result)
             if state in ("failed", "expired", "closed", "cancelled", "busy", "unknown"):
-                print(f"uber-mcp: the sign-in ended without a session ({state}).", file=sys.stderr)
+                _diagnostic(f"uber-mcp: the sign-in ended without a session ({state}).")
                 return 1
             time.sleep(2)
     except LoginUnavailable as exc:
-        print(f"uber-mcp: lost the login service ({exc}).", file=sys.stderr)
+        _diagnostic(f"uber-mcp: lost the login service ({type(exc).__name__}).")
         return 1
     except KeyboardInterrupt:
         pass
     finally:
         client.close(login["id"])
-    print("uber-mcp: no sign-in within the time limit; nothing was saved.", file=sys.stderr)
+    _diagnostic("uber-mcp: no sign-in within the time limit; nothing was saved.")
     return 1

@@ -19,3 +19,5 @@ build/
 # saved sessions and local state
 session*.json
 session.bin
+reports/
+**/build_identity.json
