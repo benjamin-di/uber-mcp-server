@@ -10,10 +10,15 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from . import __version__
+
+if os.name == "nt":
+    from nturl2path import url2pathname
+else:
+    from urllib.parse import unquote as url2pathname
 
 
 @dataclass(frozen=True)
@@ -54,7 +59,7 @@ def _matching_editable(installed: object) -> bool:
             and url.netloc in {"", "localhost"}
             and not url.query
             and not url.fragment
-            and Path(unquote(url.path)).resolve() == root
+            and Path(url2pathname(url.path)).resolve() == root
         )
     except (OSError, TypeError, ValueError):
         return False

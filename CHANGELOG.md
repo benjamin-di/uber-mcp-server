@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.5] - 2026-11-15
+
+### Fixed
+
+- Correct editable-checkout file URLs on Windows while retaining installed-package identity validation (924786c).
+- Make synthetic CI report checks independent of GNU timeout and platform line endings (924786c).
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.5.4; saved sessions, connection controls and storage formats are unchanged.
+
 ## [0.5.4] - 2026-11-15
 
 ### Fixed

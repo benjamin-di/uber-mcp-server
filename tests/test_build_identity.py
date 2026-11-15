@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import nturl2path
 import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from importlib.metadata import PackageNotFoundError
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -116,6 +117,19 @@ def test_matching_editable_checkout_can_report_unknown_revision(tmp_path, monkey
     monkeypatch.setattr(identity, "_source_root", lambda: None)
     with pytest.raises(ValueError, match="Missing embedded"):
         identity.load_identity(tmp_path / "missing.json")
+
+
+def test_windows_editable_file_url_matches_its_checkout(tmp_path, monkeypatch):
+    class WindowsPath(PureWindowsPath):
+        def resolve(self):
+            return self
+
+    root = WindowsPath("D:/source/checkout with spaces")
+    monkeypatch.setattr(identity, "_source_root", lambda: root)
+    monkeypatch.setattr(identity, "Path", WindowsPath)
+    monkeypatch.setattr(identity, "url2pathname", nturl2path.url2pathname, raising=False)
+    installed(monkeypatch, json.dumps({"url": root.as_uri(), "dir_info": {"editable": True}}))
+    assert identity.load_identity(tmp_path / "missing.json") == identity.BuildIdentity("uber", __version__, "unknown")
 
 
 def test_uninstalled_source_needs_its_own_project_marker(tmp_path, monkeypatch):

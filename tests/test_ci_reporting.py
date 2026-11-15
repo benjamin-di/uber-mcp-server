@@ -34,7 +34,7 @@ def test_bounded_log_keeps_command_exit_and_tail(tmp_path, status):
     )
     assert result.returncode == status
     assert len(log.read_bytes()) == 65536
-    assert log.read_bytes().endswith(b"last diagnostic\n")
+    assert log.read_bytes().splitlines()[-1] == b"last diagnostic"
     assert len(result.stdout) > 90000  # live output is not truncated with the artifact
 
 
@@ -82,6 +82,9 @@ def gate_project(tmp_path):
     lint.chmod(0o755)
     tools = tmp_path / "tools"
     tools.mkdir()
+    timeout = tools / "timeout"
+    timeout.write_text('#!/usr/bin/env bash\nwhile [[ "$1" == --* ]]; do shift; done\nshift\nexec "$@"\n')
+    timeout.chmod(0o755)
     uv = tools / "uv"
     uv.write_text(
         f"#!{sys.executable}\n"
