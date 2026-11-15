@@ -36,7 +36,7 @@ case "$("$uv_binary" --version)" in
     'uv 0.13.5'|'uv 0.13.5 '*) ;;
     *) echo 'Connections acceptance requires uv 0.13.5' >&2; exit 1 ;;
 esac
-cache_mounts=()
+docker_args=(run --rm)
 browser_cache="${CI_BROWSER_CACHE:-/tmp/browsers}"
 cache_root=''
 if [ -n "${FLEET_TOOLS:-}" ] && ! cache_root="$(python3 "$FLEET_TOOLS/native.py" container-cache)"; then
@@ -45,14 +45,14 @@ if [ -n "${FLEET_TOOLS:-}" ] && ! cache_root="$(python3 "$FLEET_TOOLS/native.py"
     browser_cache=''
 fi
 if [ -n "$cache_root" ]; then
-    cache_mounts=(--mount "type=bind,src=$cache_root/uv,dst=/tmp/uv-cache"
+    docker_args+=(--mount "type=bind,src=$cache_root/uv,dst=/tmp/uv-cache"
                   --mount "type=bind,src=$cache_root/pip,dst=/tmp/pip-cache")
     browser_cache="$cache_root/browsers"
 fi
 mkdir -p .artifacts
 if [ -n "$browser_cache" ]; then
     mkdir -p "$browser_cache"
-    cache_mounts+=(--mount "type=bind,src=$(cd "$browser_cache" && pwd),dst=/browsers")
+    docker_args+=(--mount "type=bind,src=$(cd "$browser_cache" && pwd),dst=/browsers")
 fi
 umask 077
 invocation="$(mktemp -d "$ROOT/.artifacts/connections-XXXXXXXX")"
@@ -63,8 +63,7 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 # Only dependency and browser downloads persist; identity and test state are disposable.
 python3 scripts/ci-log.py "$invocation/connections.log" timeout --signal=TERM --kill-after=30 900 \
-    docker run --rm --name "$name" \
-    "${cache_mounts[@]}" \
+    docker "${docker_args[@]}" --name "$name" \
     --mount "type=bind,src=$uv_binary,dst=/usr/local/bin/uv,readonly" \
     -e UV_CACHE_DIR=/tmp/uv-cache -e PIP_CACHE_DIR=/tmp/pip-cache \
     --mount "type=bind,src=$ROOT,dst=/source,readonly" \

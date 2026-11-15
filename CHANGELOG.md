@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.6] - 2026-11-15
+
+### Fixed
+
+- Keep disposable-download Connections acceptance working with the Bash 3.2 shipped on macOS (089f5eb).
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.5.5; saved sessions, connection controls and storage formats are unchanged.
+
 ## [0.5.5] - 2026-11-15
 
 ### Fixed
