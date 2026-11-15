@@ -8,8 +8,9 @@ pause after pushback stay shared: they protect the server's IP address, whicheve
 
 Which account a request acts for comes from a trusted header, ``UBER_TRUSTED_ACCOUNT_HEADER``, that the operator's
 authenticating proxy sets; it is read only on requests that carry the server's bearer, so only that proxy may hold
-the bearer. No header means the default account. A header naming an account that is not configured is refused with
-``account_not_connected``, never served from the default account.
+the bearer. When the header is configured, HTTP requests must explicitly name an account, including the default.
+A missing header or an account that is not configured is refused with ``account_not_connected``. Without a configured
+header, or over stdio, requests use the default account.
 """
 
 from __future__ import annotations

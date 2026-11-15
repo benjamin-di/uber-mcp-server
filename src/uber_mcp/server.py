@@ -435,10 +435,10 @@ class Accounts:
 
 
 def caller_account(header: str | None) -> str | None:
-    """The account id the trusted header names on this request, or None for the default account.
+    """Require the configured trusted account header on HTTP; stdio uses the default account.
 
     Read only on HTTP requests authenticated with the server's bearer (over stdio there is no header). A repeated
-    or malformed value is refused rather than ignored, so a request never silently falls back to the default."""
+    or malformed value is refused, as is a missing configured header."""
     if not header:
         return None
     try:
@@ -447,7 +447,7 @@ def caller_account(header: str | None) -> str | None:
         return None  # stdio
     values = request.headers.getlist(header)
     if not values:
-        return None
+        raise UberError("account_not_connected", log_detail="missing account header")
     token = get_access_token()
     if token is None or token.client_id != BEARER_CLIENT:
         raise UberError("account_not_connected", log_detail="account header without the bearer")

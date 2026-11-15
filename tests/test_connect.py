@@ -216,7 +216,8 @@ def test_the_link_is_for_the_callers_account_only(http, login):
     assert "expires_at" not in mine and "nothing else" in mine["next_step"]
     assert mine["url"] == "https://example.com/uber/connections/"
     assert FLOWS[-1].relay.links("second") == []
-    assert tool(http, "uber_connect")["account_id"] == "main"  # no header: the default account
+    assert tool(http, "uber_connect", "main")["account_id"] == "main"
+    assert tool(http, "uber_connect")["error"]["code"] == "account_not_connected"
     refused = tool(http, "uber_connect", "missing")
     assert refused["error"]["code"] == "account_not_connected"
     assert login.started == []  # making a link opens nothing
@@ -227,10 +228,10 @@ def test_without_a_public_url_links_are_not_offered(tmp_path, fake, monkeypatch)
     monkeypatch.setenv("MCP_BEARER_TOKEN", TOKEN)
     app = server.create_server(Accounts(default), auth=require_bearer()).http_app(**server.HTTP_OPTIONS)
     with TestClient(app) as client:
-        payload = tool(client, "uber_connect")
+        payload = tool(client, "uber_connect", "main")
         assert payload["error"]["code"] == "connect_unavailable"
         assert "uber-mcp login" in payload["error"]["next_step"]
-        assert tool(client, "uber_status")["sign_in_links"] is False
+        assert tool(client, "uber_status", "main")["sign_in_links"] is False
         assert client.get("/connect/" + "a" * 32).status_code == 404
 
 

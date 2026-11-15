@@ -181,11 +181,19 @@ def http(registry, monkeypatch):
         yield client
 
 
-def test_the_header_picks_the_account_and_no_header_means_the_default(http):
-    assert _call(http, "uber_status")["account_id"] == "main"
+def test_the_header_picks_each_explicit_account(http):
     assert _call(http, "uber_status", {HEADER: "main"})["account_id"] == "main"
     assert _call(http, "uber_status", {HEADER: "second"})["account_id"] == "second"
     assert _call(http, "uber_account", {HEADER: "second"})["account_id"] == "second"
+
+
+@pytest.mark.parametrize("extra", [None, {HEADER: ""}])
+@pytest.mark.parametrize("tool", ["uber_status", "uber_account", "uber_ride_status", "uber_connect"])
+def test_a_configured_account_header_is_required_for_http(http, fake, extra, tool):
+    payload = _call(http, tool, extra)
+    assert payload["error"]["code"] == "account_not_connected"
+    assert fake.sent == []
+    assert "url" not in payload and "account_id" not in payload
 
 
 @pytest.mark.parametrize("value", ["missing", "../main", "MAIN", " second", "second,main"])

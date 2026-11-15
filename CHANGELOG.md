@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.5.4] - 2026-11-15
+
+### Fixed
+
+- Use the compact mobile sign-in viewer with native keyboard input, Paste and Zoom (21653b9)
+- Preserve editor focus while allowing touch controls to activate on WebKit (21653b9)
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.5.3; saved sessions, connection controls and storage formats are unchanged.
+
+## [0.5.3] - 2026-11-14
+
+### Fixed
+
+- Require signin-window 0.8.2 for package installations, so an existing 0.8.1 installation cannot miss the mobile remote-input fix.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.5.2; saved sessions, account controls and storage formats are unchanged.
+
+## [0.5.2] - 2026-11-14
+
+### Security
+
+- Refuse HTTP requests without the configured account header instead of selecting the default account. Explicit account selection, standalone HTTP without an account-header configuration and stdio behavior are preserved (#7).
+
+### Fixed
+
+- Use signin-window 0.8.2 so phone users can open a keyboard in remote sign-in and edits remain bound to their original viewer.
+
+### Upgrade
+
+- Action required: multi-user HTTP callers must send their configured account header on every request.
+- Rollback: compatible with 0.5.1 saved state. Preserve credentials, owner/rider bindings, disconnect controls and booking history. Rolling back restores the previous missing-header fallback.
+
 ## [0.5.1] - 2026-11-12
 
 _Publishes the changes since the last public release, which the public mirror did not receive; the package is unchanged from 0.5.0._

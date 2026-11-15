@@ -320,7 +320,10 @@ persistent disconnect controls. My connections also lets the owner reconnect wit
   Origin, and strip untrusted bearer and account headers. `/mcp` keeps its existing admission checks.
 - **Pasting works.** Ctrl+V (Cmd+V) in the window types the clipboard's text into Uber's page (a small add-on to
   noVNC's viewer from [signin-window](https://github.com/benjamin-di/signin-window), the library the sign-in window
-  and its links are built on; up to 1000 characters, characters the window's keyboard has, which covers ASCII). On a phone, noVNC's keyboard button opens the phone's keyboard, which pastes as usual.
+  and its links are built on; up to 1000 characters, characters the window's keyboard has, which covers ASCII).
+  On a phone, select the field on the remote page, then tap **Keyboard** to type or **Paste** to insert copied
+  text. **Done** dismisses the keyboard without submitting; use the page's own button to continue. **Zoom**
+  enlarges the page, and dragging with one finger pans the view.
 - Passkeys do not work in a remote window: sign in with a code or a password.
 
 Without the login service, sign in with `uber-mcp login` on a computer with a screen and copy its `session.json` into
@@ -393,9 +396,9 @@ because Uber sees one client.
 - **Which account a request is for** comes from a header the proxy sets, named by `UBER_TRUSTED_ACCOUNT_HEADER`
   (unset: every request is the default account's). It is read only on requests that carry the server's bearer, so
   **only the proxy may hold `MCP_BEARER_TOKEN`**, and the proxy must remove any copy of that header a client sends.
-  A request without the header is the default account's; one whose header names an account that is not set up (or
-  names it twice, or malformed) gets `account_not_connected` and is never served from another account. Over stdio
-  there is no header: always the default account.
+  When configured, every HTTP request must explicitly name an account, including the default account's name.
+  A missing header, an account that is not set up, a repeated header or a malformed value gets
+  `account_not_connected`. Over stdio there is no header: always the default account.
 - Confirm tokens belong to the account that previewed them: a token from one account is `confirm_invalid` on any
   other.
 
