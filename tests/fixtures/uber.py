@@ -81,7 +81,7 @@ def live_trip() -> dict[str, Any]:
 def place(place_id: str, name: str, lat: float, lng: float, *, tag: str | None = None) -> dict[str, Any]:
     return {"id": place_id, "provider": "google_places", "source": "SEARCH", "addressLine1": name,
             "addressLine2": "1 Example Road, Example City", "categories": ["place"], "tag": tag,
-            "coordinate": {"latitude": lat, "longitude": lng}}  # fmt: skip
+            "timezone": "Etc/UTC", "coordinate": {"latitude": lat, "longitude": lng}}  # fmt: skip
 
 
 def search(query: str) -> dict[str, Any]:

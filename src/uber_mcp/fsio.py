@@ -9,6 +9,7 @@ one computer each start their own server, and they share the state directory.
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import tempfile
@@ -25,23 +26,26 @@ NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 BINARY = getattr(os, "O_BINARY", 0)
 
 
-def _fsync_dir(directory: Path) -> None:
+def _fsync_dir(directory: Path, *, strict: bool = False) -> None:
     """Make a completed rename durable; best effort (Windows and some filesystems cannot open a directory)."""
     if os.name == "nt":  # pragma: no cover
         return
     try:
         fd = os.open(directory, os.O_RDONLY)
-    except OSError:
+    except OSError as exc:
+        if strict and exc.errno not in {errno.EINVAL, errno.ENOTSUP}:
+            raise
         return
     try:
         os.fsync(fd)
-    except OSError:
-        pass
+    except OSError as exc:
+        if strict and exc.errno not in {errno.EINVAL, errno.ENOTSUP}:
+            raise
     finally:
         os.close(fd)
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
+def atomic_write_bytes(path: Path, data: bytes, *, strict: bool = False) -> None:
     """Replace ``path`` with ``data``, readable only by this user."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".tmp-", suffix=path.suffix, dir=path.parent)
@@ -55,11 +59,15 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    _fsync_dir(path.parent)
+    _fsync_dir(path.parent, strict=strict)
 
 
-def atomic_write_json(path: Path, payload: Any) -> None:
-    atomic_write_bytes(path, (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode())
+def atomic_write_json(path: Path, payload: Any, *, strict: bool = False) -> None:
+    atomic_write_bytes(
+        path,
+        (json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=not strict) + "\n").encode(),
+        strict=strict,
+    )
 
 
 def read_private(path: Path, limit: int) -> bytes:

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextvars
 import json
 import shutil
 import sys
@@ -28,6 +29,10 @@ import urllib.request
 
 from .config import ConfigError, Settings
 from .identity import build_identity, log_fields
+
+_SAVE_CONTEXT: contextvars.ContextVar[tuple[Settings, str, str | None, str | None] | None] = contextvars.ContextVar(
+    "_SAVE_CONTEXT", default=None
+)
 
 
 def _diagnostic(message: str) -> None:
@@ -98,6 +103,14 @@ def _main(argv: list[str] | None = None) -> int:
     resolution = reservation.add_mutually_exclusive_group()
     resolution.add_argument("--reservation-id", help="bind a reservation independently checked in Uber")
     resolution.add_argument("--not-booked", action="store_true", help="attest Uber did not accept this attempt")
+    attempt = admin_commands.add_parser("attempt", help="inspect or resolve recorded held money attempts; never sends")
+    attempt.add_argument("action", choices=("list", "resolve"))
+    attempt.add_argument("operation", nargs="?")
+    attempt.add_argument("--account")
+    attempt.add_argument("--evidence", help="independent correlation or authoritative non-submission evidence")
+    proof = attempt.add_mutually_exclusive_group()
+    proof.add_argument("--target-id", help="independently correlated provider id; exact read-back is required")
+    proof.add_argument("--not-submitted", action="store_true", help="attest proven non-submission, never mere absence")
     account = admin_commands.add_parser("account", help="more accounts on one server")
     account_commands = account.add_subparsers(dest="account_command", required=True)
     account_commands.add_parser("list", help="every account, signed in or not, with its caps")
@@ -152,14 +165,49 @@ def _health(url: str) -> int:
         return 1
 
 
-def _save(settings: Settings, result: dict) -> int:
+def _save(
+    settings: Settings,
+    result: dict,
+    *,
+    root_settings: Settings | None = None,
+    account_id: str | None = None,
+    expected_instance: str | None = None,
+    expected_revision: str | None = None,
+) -> int:
+    from . import accounts
     from .errors import UberError
+    from .fsio import locked
     from .session import Session, mask_name
 
+    ctx = _SAVE_CONTEXT.get()
+    if root_settings is not None:
+        root = root_settings
+        target_account = account_id or root.default_account
+    elif ctx is not None:
+        root, target_account, ctx_instance, ctx_revision = ctx
+        if expected_instance is None:
+            expected_instance = ctx_instance
+        if expected_revision is None:
+            expected_revision = ctx_revision
+    else:
+        root = settings
+        target_account = account_id or settings.default_account
+    rider = result.get("account") if isinstance(result.get("account"), dict) else {}
+    uuid = str(rider.get("uuid") or "")
     try:
-        generation = Session(settings.session_path, settings.session_key).write(
-            result["account"], result["user_agent"], result["cookies"]
-        )
+        with locked(root.state_dir / ".connections-adoption.lock"):
+            if expected_instance is not None and accounts.instance_id(root, target_account) != expected_instance:
+                _diagnostic("uber-mcp: that account changed or was recreated while signing in; nothing was saved.")
+                return 1
+            if uuid and accounts.rider_in_use_elsewhere(root, target_account, uuid):
+                _diagnostic("uber-mcp: that Uber rider is already connected to another account on this server.")
+                return 1
+            generation = Session(settings.session_path, settings.session_key).write(
+                result["account"],
+                result["user_agent"],
+                result["cookies"],
+                expected_revision=expected_revision,
+            )
     except (UberError, KeyError, TypeError):
         _diagnostic("uber-mcp: Uber's answer did not contain a usable session; try again.")
         return 1
@@ -197,7 +245,7 @@ def _login(settings: Settings, browser: str) -> int:
         else:
             _diagnostic("Run `patchright install chromium` first.")
         return 1
-    return _save(settings, result)
+    return _save(settings, result, root_settings=settings, account_id=settings.default_account)
 
 
 def _logout(settings: Settings) -> int:
@@ -246,30 +294,74 @@ def _admin(settings: Settings, options: argparse.Namespace) -> int:
         return _admin_account(settings, options)
     if options.admin in ("freeze", "unfreeze"):
         ids = [options.account] if options.account else accounts.configured(settings)
+        failed = False
         for account_id in ids:
-            account = _account_settings(settings, account_id)
-            if account is None:
-                return 2
-            ledger = Ledger(account.state_dir)
-            if options.admin == "freeze":
-                dropped = ledger.freeze(" ".join(options.reason) or "frozen by the operator")
-                print(f"{account_id}: booking is frozen; {dropped} pending preview(s) dropped. "
-                      "`uber-mcp admin unfreeze` resumes.")  # fmt: skip
+            if options.account:
+                account = _account_settings(settings, account_id)
+                if account is None:
+                    return 2
+                folder = account.state_dir
+                booking_enabled = account.booking_enabled
+            elif account_id == settings.default_account:
+                folder = settings.state_dir
+                booking_enabled = settings.booking_enabled
             else:
-                ledger.freeze(None)
-                print(f"{account_id}: booking is allowed again, within the caps." if account.booking_enabled else
-                      f"{account_id}: unfrozen, but booking stays off: it has no caps.")  # fmt: skip
-        return 0
+                try:
+                    folder = accounts.account_dir(settings, account_id)
+                except accounts.AccountConfigError as exc:
+                    _diagnostic(f"uber-mcp: {account_id}: {exc}")
+                    failed = True
+                    continue
+                try:
+                    booking_enabled = accounts.settings_for(settings, account_id).booking_enabled
+                except Exception:
+                    booking_enabled = False
+            try:
+                ledger = Ledger(folder)
+                if options.admin == "freeze":
+                    dropped = ledger.freeze(" ".join(options.reason) or "frozen by the operator")
+                    print(f"{account_id}: booking is frozen; {dropped} pending preview(s) dropped. "
+                          "`uber-mcp admin unfreeze` resumes.")  # fmt: skip
+                else:
+                    ledger.freeze(None)
+                    print(f"{account_id}: booking is allowed again, within the caps." if booking_enabled else
+                          f"{account_id}: unfrozen, but booking stays off: it has no caps.")  # fmt: skip
+            except Exception as exc:
+                _diagnostic(f"uber-mcp: {account_id}: {options.admin} failed ({type(exc).__name__}).")
+                failed = True
+        return 1 if failed else 0
     account = _account_settings(settings, options.account)
     if account is None:
         return 2
+    if options.admin == "attempt":
+        from .errors import UberError
+        from .server import Accounts
+
+        if options.action == "list":
+            print(json.dumps(Ledger(account.state_dir).held_actions(), indent=2))
+            return 0
+        if not options.operation or not options.evidence or not (options.target_id or options.not_submitted):
+            _diagnostic("Specify a held operation, independent --evidence and --target-id or --not-submitted.")
+            return 2
+        try:
+            service = Accounts.from_settings(settings).get(options.account, allow_disconnected=True)
+            service.booking.resolve_action(
+                options.operation,
+                target=options.target_id,
+                not_submitted=options.not_submitted,
+                evidence=options.evidence,
+            )
+        except UberError as exc:
+            _diagnostic(f"uber-mcp: {exc.code}")
+            return 1
+        print("Attempt resolved without submitting a booking or cancellation.")
+        return 0
     if options.admin == "reservation":
         from .errors import UberError
-        from .server import UberService
+        from .server import Accounts
 
-        service = UberService(account)
         if options.action == "list":
-            print(json.dumps(service.ledger.attempts(), indent=2))
+            print(json.dumps(Ledger(account.state_dir).attempts(), indent=2))
             return 0
         if not options.attempt or not (options.reservation_id or options.not_booked):
             _diagnostic(
@@ -277,6 +369,7 @@ def _admin(settings: Settings, options: argparse.Namespace) -> int:
             )
             return 2
         try:
+            service = Accounts.from_settings(settings).get(options.account, allow_disconnected=True)
             service.booking.resolve_reservation(options.attempt, options.reservation_id)
         except UberError as exc:
             _diagnostic(f"uber-mcp: {exc.code}")
@@ -287,7 +380,20 @@ def _admin(settings: Settings, options: argparse.Namespace) -> int:
         for entry in Ledger(account.state_dir).recent_audit(max(1, min(options.n, 500))):
             print(json.dumps(entry, ensure_ascii=False))
         return 0
-    return _admin_login(account, options.layout, options.minutes)
+    from .errors import UberError
+    from .session import Session
+
+    target_account = options.account or settings.default_account
+    expected_instance = accounts.instance_id(settings, target_account) if options.account else None
+    try:
+        expected_revision = Session(account.session_path, account.session_key).connection.read()["epoch"]
+    except UberError:
+        expected_revision = None
+    token = _SAVE_CONTEXT.set((settings, target_account, expected_instance, expected_revision))
+    try:
+        return _admin_login(account, options.layout, options.minutes)
+    finally:
+        _SAVE_CONTEXT.reset(token)
 
 
 def _admin_account(settings: Settings, options: argparse.Namespace) -> int:

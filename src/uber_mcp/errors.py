@@ -20,12 +20,12 @@ NEXT_STEP: dict[str, str] = {
     "invalid_argument": ("Fix the arguments and call again."),
     "not_signed_in": (
         "No Uber account is signed in yet. Call uber_connect: on a server that offers it, it "
-        "gives a one-time link where the person signs in to Uber themselves; give them the "
+        "gives the authenticated My connections link where the owner signs in to Uber themselves; give them the "
         "link. Otherwise ask the person to run `uber-mcp login` on the computer this server "
         'runs on, or the operator to start a sign-in (README "Signing in").'
     ),
     "session_expired": (
-        "Uber ended the sign-in. Call uber_connect for a one-time sign-in link and give it to "
+        "Uber ended the sign-in. Call uber_connect for the authenticated My connections link and give it to "
         "the person (or, where it is not offered, ask them to run `uber-mcp login` or the "
         "operator to sign them in). Do not retry until uber_status shows signed_in true."
     ),
@@ -56,17 +56,19 @@ NEXT_STEP: dict[str, str] = {
         "it). Nothing was booked. The person can book in the Uber app."
     ),
     "over_cap": (
-        "The fare is above this server's cap (per ride, or today's total). Nothing was "
-        "booked. Tell the person; they can book in the Uber app."
+        "The fare exceeds this server's cap (per ride or rolling 24-hour total), uses a different currency, or has no "
+        "verifiable price. Nothing was booked. Tell the person; they can book in the Uber app."
     ),
     "price_rose": (
-        "The server's fresh quote exceeds the approved price or uses a different currency. Nothing was submitted "
-        "to Uber. Compare the amounts and currencies, not just the display text. Review the fresh preview if "
-        "provided, otherwise request a new preview. Confirm only after the person approves its price."
+        "The server's fresh quote exceeds the approved price, changed pricing basis, or uses a different currency. "
+        "Nothing was submitted to Uber. Compare the amounts, pricing kind and currencies, not just the display text. "
+        "Review the fresh preview if provided, otherwise request a new preview. Confirm only after the person "
+        "approves its price."
     ),
     "confirm_invalid": (
-        "That confirm token is unknown, already used, expired or for another ride. Nothing "
-        "was booked. Call again without confirm for a fresh preview and ask the person."
+        "That confirm token is unknown, already used, expired or for another ride. If you already confirmed it, "
+        "check uber_ride_status or uber_trips before requesting again; otherwise call again without confirm for a "
+        "fresh preview and ask the person."
     ),
     "trip_active": (
         "A ride is already active on this account. Check uber_ride_status; it must end or be "
@@ -103,8 +105,8 @@ NEXT_STEP: dict[str, str] = {
         "The pickup is outside Uber's current booking window. Choose another time and preview again."
     ),
     "reservation_not_found": (
-        "Uber did not return that reservation on this account. Check upcoming trips in Uber; "
-        "absence is not proof of cancellation."
+        "Uber did not return an active reservation on this account (or it is already in a terminal state; check "
+        "status if included). Check upcoming trips in Uber; absence is not proof of cancellation."
     ),
     "reservation_conflict": (
         "A reservation already exists near this pickup time. Review upcoming trips before booking another."
@@ -159,6 +161,7 @@ class UberError(Exception):
         if code not in NEXT_STEP:
             raise ValueError(f"unknown error code {code}")
         super().__init__(code)
+        self.not_submitted = False  # Set only by a boundary that did not enter the provider opener.
         self.code = code
         self.detail = detail  # invalid_argument: our validation text; uber_refused: Uber's error key
         self.log_detail = log_detail

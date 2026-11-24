@@ -269,7 +269,7 @@ def test_a_new_link_replaces_the_old_one_and_links_are_rate_limited(http, login)
     assert http.get(first).status_code == 404 and http.get(second).status_code == 200
     for _ in range(relay_module.Relay.__init__.__kwdefaults__["links_per_hour"] - 2):
         owner_link(http)
-    assert connection_action(http, "start", follow_redirects=False).status_code == 409
+    assert connection_action(http, "start", follow_redirects=False).status_code == 429
     assert tool(http, "uber_connect", "main")["account_id"] == "main"  # per account
 
 

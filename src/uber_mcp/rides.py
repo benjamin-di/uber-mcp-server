@@ -65,7 +65,9 @@ def price(product: dict[str, Any], fare: dict[str, Any]) -> dict[str, Any]:
 
 def quote_expiry(fare: dict[str, Any], quoted_at: float) -> float:
     expires = ((_meta(fare).get("upfrontFare") or {}).get("signature") or {}).get("expiresAt")
-    return float(expires) if isinstance(expires, int | float) and expires > quoted_at else quoted_at + QUOTE_FALLBACK
+    if not isinstance(expires, bool) and isinstance(expires, int | float) and math.isfinite(expires) and expires > 0:
+        return float(expires)
+    return quoted_at + QUOTE_FALLBACK
 
 
 def options(raw: dict[str, Any], quoted_at: float) -> list[dict[str, Any]]:

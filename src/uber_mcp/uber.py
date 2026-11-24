@@ -28,7 +28,7 @@ from importlib import resources
 from typing import Any
 
 from .errors import UberError
-from .session import Session
+from .session import Session, from_jar
 from .state import StateStore
 
 log = logging.getLogger(__name__)
@@ -94,20 +94,54 @@ class Transport:
             lambda jar: urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), NoRedirects())
         )
 
-    def post(self, jar: http.cookiejar.CookieJar, url: str, body: bytes, headers: dict[str, str]) -> tuple[int, str]:
-        if urllib.parse.urlsplit(url).hostname not in HOSTS:
+    def post(
+        self,
+        jar: http.cookiejar.CookieJar,
+        url: str,
+        body: bytes,
+        headers: dict[str, str],
+        *,
+        deadline: float | None = None,
+    ) -> tuple[int, str]:
+        boundary = [False]
+        try:
+            return self._post(jar, url, body, headers, boundary, deadline=deadline)
+        except UberError as exc:
+            exc.not_submitted = not boundary[0]
+            raise
+
+    def _post(
+        self,
+        jar: http.cookiejar.CookieJar,
+        url: str,
+        body: bytes,
+        headers: dict[str, str],
+        boundary: list[bool],
+        *,
+        deadline: float | None = None,
+    ) -> tuple[int, str]:
+        host = urllib.parse.urlsplit(url).hostname
+        if host not in HOSTS:
             raise UberError("internal_error", log_detail="host not allowlisted")
         if not self._lock.acquire(timeout=self._queue_wait):
             raise UberError("busy")
         try:
             self.state.check_pause()
-            self.state.take()
+            if deadline is not None and time.time() >= deadline:
+                raise UberError("upstream_error", log_detail="quote expired before dispatch")
             wait = MIN_INTERVAL + random.random() * JITTER - (self._monotonic() - self._last)
             if wait > 0:
                 self._sleep(wait)
+            if deadline is not None and time.time() >= deadline:
+                raise UberError("upstream_error", log_detail="quote expired during pacing")
+            self.state.take()
             req = urllib.request.Request(url, data=body, method="POST", headers=headers)
             try:
-                with self._opener(jar).open(req, timeout=TIMEOUT) as resp:
+                opener = self._opener(jar)
+                if deadline is not None and time.time() >= deadline:
+                    raise UberError("upstream_error", log_detail="quote expired before open")
+                boundary[0] = True
+                with opener.open(req, timeout=TIMEOUT) as resp:
                     status, raw = resp.status, resp.read(MAX_BODY + 1)
             except urllib.error.HTTPError as err:
                 status, raw = err.code, err.read(MAX_BODY + 1)
@@ -117,11 +151,26 @@ class Transport:
                 raise UberError("upstream_error", log_detail="network") from None
             finally:
                 self._last = self._monotonic()
+            if status == 429:
+                self.state.pause("429")
+            signed_out_404 = host == "riders.uber.com" and status == 404
+            head = raw[:4096].decode("utf-8", "replace")
+            text: str | None = raw.decode("utf-8", "replace") if len(raw) <= MAX_BODY else None
+            if (
+                status == 403
+                and _looks_like_challenge(head)
+                or status not in (401, 403, 429)
+                and not signed_out_404
+                and status < 500
+                and _looks_like_challenge(head)
+                and (text is None or _is_challenge_not_json(text))
+            ):
+                self.state.pause("challenge")
         finally:
             self._lock.release()
-        if len(raw) > MAX_BODY:
+        if len(raw) > MAX_BODY or text is None:
             raise UberError("schema_changed", log_detail="body too large")
-        return status, raw.decode("utf-8", "replace")
+        return status, text
 
 
 class Uber:
@@ -131,13 +180,26 @@ class Uber:
         self.transport, self.session = transport, session
         self.documents = operations()
 
-    def graphql(self, operation: str, variables: dict[str, Any] | None = None, *, money: bool = False) -> dict:
+    def graphql(
+        self,
+        operation: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        money: bool = False,
+        strict: bool = False,
+        deadline: float | None = None,
+    ) -> dict:
         surface = MONEY_OPERATIONS.get(operation) if money else READ_OPERATIONS.get(operation)
         if surface is None or operation not in self.documents:
             raise UberError("internal_error", log_detail=f"operation {operation} not allowed here")
         url = ENDPOINTS[surface]
         origin = "https://" + urllib.parse.urlsplit(url).hostname  # type: ignore[operator]
-        generation, jar, user_agent = self.session.checkout()
+        try:
+            generation, jar, user_agent, rider, dir_ino = self.session.checkout_with_identity()
+        except UberError as exc:
+            exc.not_submitted = True
+            raise
+        baseline = from_jar(jar)
         body = json.dumps(
             {"operationName": operation, "query": self.documents[operation], "variables": variables or {}},
             separators=(",", ":"),
@@ -152,25 +214,37 @@ class Uber:
             "x-csrf-token": "x",
         }
         try:
-            status, text = self.transport.post(jar, url, body, headers)
+            status, text = self.transport.post(jar, url, body, headers, deadline=deadline)
         except UberError as exc:
             if exc.code == "session_expired":
                 self.session.mark("dead", generation)
             raise
         finally:
-            self.session.store_jar(jar, generation)
-        return self._data(operation, surface, generation, status, text)
+            self.session.store_jar(jar, generation, baseline=baseline, rider=rider, dir_ino=dir_ino)
+        return self._data(
+            operation, surface, generation, status, text, money, strict=strict, rider=rider, dir_ino=dir_ino
+        )
 
-    def _data(self, operation: str, surface: str, generation: int, status: int, text: str) -> dict:
+    def _data(
+        self,
+        operation: str,
+        surface: str,
+        generation: int,
+        status: int,
+        text: str,
+        monetary: bool = False,
+        *,
+        strict: bool = False,
+        rider: str | None = None,
+        dir_ino: int | None = None,
+    ) -> dict:
         if status == 429:
-            self.transport.state.pause("429")
             raise UberError("blocked", log_detail=f"429 {operation}")
         if status == 401 or (surface == "riders" and status == 404):
             self.session.mark("dead", generation)
             raise UberError("session_expired", log_detail=f"{status} {operation}")
         if status == 403:
             if _looks_like_challenge(text):  # Cloudflare or bot defence, not the sign-in
-                self.transport.state.pause("challenge")
                 raise UberError("blocked", log_detail=f"403 challenge {operation}")
             self.session.mark("dead", generation)
             raise UberError("session_expired", log_detail=f"403 {operation}")
@@ -180,7 +254,6 @@ class Uber:
             payload = json.loads(text)
         except ValueError:
             if _looks_like_challenge(text):
-                self.transport.state.pause("challenge")
                 raise UberError("blocked", log_detail=f"challenge page {operation}") from None
             raise UberError("schema_changed", log_detail=f"{status} not json {operation}") from None
         if not isinstance(payload, dict):
@@ -191,16 +264,23 @@ class Uber:
             self.session.mark("dead", generation)
             raise UberError("session_expired", log_detail=f"graphql {sorted(codes)} {operation}")
         data = payload.get("data")
+        if monetary and (status != 200 or errors or payload.get("errors") not in (None, [])):
+            raise UberError("outcome_unknown")
         if codes & SCHEMA_CODES or (errors and _validation_error(errors)):
             raise UberError("schema_changed", log_detail=f"graphql {sorted(codes)} {operation}")
-        if not isinstance(data, dict) or (errors and not any(v for v in data.values())):
+        if (
+            not isinstance(data, dict)
+            or (strict and (status != 200 or payload.get("errors") not in (None, [])))
+            or (errors and not any(v for v in data.values()))
+        ):
             raise UberError("upstream_error", log_detail=f"graphql errors {sorted(codes)} {operation}")
         if operation in ("CurrentUserRidersWeb",):
             user = data.get("currentUser") or {}
-            held = self.session.account or {}
-            if user.get("uuid") and user.get("uuid") == held.get("uuid"):
+            expected_rider = rider if rider is not None else (self.session.account or {}).get("uuid")
+            if user.get("uuid") and user.get("uuid") == expected_rider:
                 self.session.mark("live", generation)
             elif user.get("uuid"):
+                self.session.invalidate(generation, rider=expected_rider, dir_ino=dir_ino)
                 raise UberError("session_invalid", log_detail="another rider than the one signed in")
         return data
 
@@ -208,6 +288,16 @@ class Uber:
 def _looks_like_challenge(text: str) -> bool:
     head = text[:4000].lower()
     return any(m in head for m in ("cf-chl", "challenge-platform", "captcha", "px-captcha", "_pxhd", "<!doctype html"))
+
+
+def _is_challenge_not_json(text: str) -> bool:
+    if not _looks_like_challenge(text):
+        return False
+    try:
+        json.loads(text)
+    except ValueError:
+        return True
+    return False
 
 
 def _validation_error(errors: list[Any]) -> bool:

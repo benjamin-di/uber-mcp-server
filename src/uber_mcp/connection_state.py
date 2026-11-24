@@ -73,7 +73,7 @@ class ConnectionState:
 
     def save(self, value):
         self.mark()
-        atomic_write_json(self.path, value)
+        atomic_write_json(self.path, value, strict=True)
 
     def ensure(self):
         with self.locked() as value:

@@ -69,17 +69,20 @@ def test_confirm_books_with_a_fresh_quote_and_records_it(booking_service, fake):
 
 def test_a_token_works_once(booking_service, fake):
     token = preview(booking_service)["confirm_token"]
-    booking_service.request_ride(*ARGS, token)
-    fake.trip = None  # even with no ride active, the same token cannot book again
-    assert code(booking_service.request_ride, *ARGS, token) == "confirm_invalid"
+    result = booking_service.request_ride(*ARGS, token)
+    fake.trip = None  # the recorded outcome replays even when no ride is active
+    before = len(fake.sent)
+    assert booking_service.request_ride(*ARGS, token) == result
+    assert len(fake.sent) == before
     assert fake.ops().count("TripRequest") == 1
 
 
 def test_a_token_is_bound_to_its_inputs(booking_service, fake):
     token = preview(booking_service)["confirm_token"]
     assert code(booking_service.request_ride, "Example Mall", "Example Home", "UberX", None, token) == "confirm_invalid"
-    assert code(booking_service.request_ride, *ARGS, token) == "confirm_invalid"  # and it is spent
-    assert "TripRequest" not in fake.ops()
+    # A mismatched caller cannot consume someone else's matching approval.
+    assert booking_service.request_ride(*ARGS, token)["requested"]
+    assert fake.ops().count("TripRequest") == 1
 
 
 def test_unknown_token(booking_service, fake):
@@ -180,6 +183,13 @@ def test_a_lost_answer_is_outcome_unknown_never_a_retry(booking_service, fake):
     assert code(booking_service.request_ride, *ARGS, token) == "outcome_unknown"
     assert fake.ops().count("TripRequest") == 1
     assert booking_service.ledger.recent_audit(1)[0]["outcome"] == "failed"
+    assert booking_service.ledger.spent_24h("XXD") == 5000
+    fake.prices["UberX"] = 6000
+    booking_service.ledger.booked(5000, "XXD", fx.TRIP)
+    assert code(booking_service.request_ride, *ARGS, None) == "over_cap"
+    before = len(fake.sent)
+    assert code(booking_service.request_ride, *ARGS, token) == "outcome_unknown"
+    assert len(fake.sent) == before
 
 
 def test_uber_refusing_is_reported_with_its_key(booking_service, fake):

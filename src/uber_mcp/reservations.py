@@ -45,6 +45,26 @@ def pickup_time(value: str, timezone: str) -> dict[str, Any]:
         ) from None
 
 
+def valid_fee(value: Any) -> bool:
+    """Accepted Uber chargeFee representations: bool (False = no fee), non-negative finite number, or non-empty text."""
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, int | float):
+        return math.isfinite(value) and value >= 0
+    if isinstance(value, str):
+        return bool(value.strip())
+    return False
+
+
+def fees_equal(a: Any, b: Any) -> bool:
+    """Compare cancellation fee dicts strictly by representation and value (e.g. 1 != True, 0 != False)."""
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return type(a) is type(b) and a == b
+    if set(a) != set(b):
+        return False
+    return all(type(a[k]) is type(b[k]) and a[k] == b[k] for k in a)
+
+
 def reservation_id(value: str) -> str:
     if not TRIP_ID.fullmatch(value or ""):
         raise UberError("invalid_argument", "id must be a reservation id from Uber")
@@ -57,7 +77,9 @@ class Reservations:
 
     def quote(self, pickup: dict, dropoff: dict, payment: dict, when: dict) -> dict:
         location_zone = pickup.get("timezone")
-        if location_zone and location_zone != when["timezone"]:
+        if not isinstance(location_zone, str) or not location_zone.strip():
+            raise UberError("reservation_unavailable", log_detail="pickup timezone unavailable")
+        if location_zone != when["timezone"]:
             raise UberError("invalid_argument", "timezone must match the pickup location's timezone")
         data = self.uber.graphql("DateTimeReservationData", {"coordinate": trip_location(pickup)["coordinate"]})
         data = data.get("dateTimeReservationData")
@@ -118,9 +140,9 @@ class Reservations:
             "maximum_notice_s": maximum,
         }
 
-    def raw(self, value: str) -> dict:
+    def raw(self, value: str, *, strict: bool = False) -> dict:
         value = reservation_id(value)
-        data = self.uber.graphql("GetReservation", {"reservationUUID": value}).get("getReservation")
+        data = self.uber.graphql("GetReservation", {"reservationUUID": value}, strict=strict).get("getReservation")
         raw = data.get("reservation") if isinstance(data, dict) else None
         if not isinstance(raw, dict) or raw.get("reservationUUID") != value:
             raise UberError("reservation_not_found")
@@ -145,8 +167,9 @@ class Reservations:
                     "nickname": p.get("nickname") or "",
                 },
             },
+            strict=True,
         ).get("cancellationInformation")
-        if not isinstance(data, dict) or "chargeFee" not in data or data["chargeFee"] is None:
+        if not isinstance(data, dict) or "chargeFee" not in data or not valid_fee(data["chargeFee"]):
             raise UberError("cancellation_terms_unavailable")
         return {
             "title": data.get("title"),
@@ -156,13 +179,21 @@ class Reservations:
 
 
 def view(raw: dict) -> dict:
-    when = raw.get("pickupTimeWithTimezone") or {}
-    product = raw.get("vehicleView") or {}
-    driver = raw.get("driver") or {}
+    when = raw.get("pickupTimeWithTimezone") if isinstance(raw.get("pickupTimeWithTimezone"), dict) else {}
+    product = raw.get("vehicleView") if isinstance(raw.get("vehicleView"), dict) else {}
+    driver = raw.get("driver") if isinstance(raw.get("driver"), dict) else {}
+    upfront = raw.get("upfrontFare") if isinstance(raw.get("upfrontFare"), dict) else {}
+    estimate = raw.get("fareEstimate") if isinstance(raw.get("fareEstimate"), dict) else {}
+    status = raw.get("reservationStatus") or "UNKNOWN"
+    next_step = (
+        f"This reservation is {str(status).lower()}."
+        if status in TERMINAL
+        else "A reservation held by Uber does not guarantee a driver. Check its status before pickup."
+    )
     return {
         "reservation_id": raw["reservationUUID"],
         "trip_id": raw.get("jobUUID"),
-        "status": raw.get("reservationStatus") or "UNKNOWN",
+        "status": status,
         "is_reserve": raw.get("isUberReserve"),
         "driver_assigned": bool(driver.get("uuid")),
         "driver": {k: driver[k] for k in ("name", "rating") if k in driver} or None,
@@ -172,7 +203,7 @@ def view(raw: dict) -> dict:
         "pickup": raw.get("pickupLocation"),
         "dropoff": raw.get("destinationLocation"),
         "product": product.get("displayName") or product.get("description"),
-        "fare": (raw.get("upfrontFare") or {}).get("fare") or (raw.get("fareEstimate") or {}).get("fareEstimateString"),
+        "fare": upfront.get("fare") or estimate.get("fareEstimateString"),
         "messages": raw.get("scheduledRidesMessages") or [],
-        "next_step": "A reservation held by Uber does not guarantee a driver. Check its status before pickup.",
+        "next_step": next_step,
     }

@@ -18,14 +18,16 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import secrets
 import shutil
 import time
 from pathlib import Path
 from typing import Any
 
 from .config import ConfigError, Money, Settings, parse_money
+from .connection_state import ConnectionState
 from .errors import UberError
-from .fsio import atomic_write_json
+from .fsio import atomic_write_json, locked
 
 # Path-safe by construction: lower-case letters, digits and dashes, never "." or "/" or empty.
 ACCOUNT_ID = re.compile(r"[a-z][a-z0-9-]{0,31}\Z")
@@ -115,33 +117,85 @@ def _text(amount: Money) -> str:
     return f"{amount.currency} {amount.cents // 100}.{amount.cents % 100:02d}"
 
 
+def instance_id(settings: Settings, account_id: str) -> str | None:
+    """Stable identifier for one creation of a named account; changes if removed and re-added."""
+    if account_id == settings.default_account or not valid_id(account_id):
+        return None
+    data = _read(settings.state_dir / ACCOUNTS_DIR / account_id / ACCOUNT_FILE)
+    if data is None:
+        return None
+    ident = data.get("instance_id")
+    if isinstance(ident, str) and ident:
+        return ident
+    created = data.get("created_at")
+    return str(created) if isinstance(created, int | float) else None
+
+
+def rider_in_use_elsewhere(settings: Settings, account_id: str, uuid: str) -> bool:
+    """Whether another account directory holds a session or durable rider binding for this Uber rider.
+
+    Reads rider bindings independently of booking caps and fails closed if another account's controls are unreadable.
+    """
+    from .session import Session
+
+    folders: list[tuple[str, Path]] = []
+    if account_id != settings.default_account:
+        folders.append((settings.default_account, settings.state_dir))
+    root = settings.state_dir / ACCOUNTS_DIR
+    if root.is_dir():
+        for entry in sorted(root.iterdir()):
+            if (
+                entry.is_dir()
+                and valid_id(entry.name)
+                and entry.name != account_id
+                and entry.name != settings.default_account
+            ):
+                folders.append((entry.name, entry))
+    session_name = "session.bin" if settings.session_key else "session.json"
+    for _other, folder in folders:
+        session = Session(folder / session_name, settings.session_key)
+        bound = session.connection.read()["rider"]  # raises connection_state_invalid -> fail closed
+        held = session.account
+        if bound == uuid or (held is not None and held.get("uuid") == uuid):
+            return True
+    return False
+
+
 def add(settings: Settings, account_id: str, max_fare: str | None = None, max_fare_24h: str | None = None) -> Path:
     """Create an account (no caps: read-only unless both are given). Refuses an existing one."""
     folder = account_dir(settings, check_id(account_id))
     caps = _caps_record(max_fare, max_fare_24h)
-    if (folder / ACCOUNT_FILE).exists():
-        raise AccountConfigError(f"account {account_id} exists (set its caps with `admin account caps`)")
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    atomic_write_json(folder / ACCOUNT_FILE, {"created_at": int(time.time()), **caps})
+    with locked(settings.state_dir / ".connections-adoption.lock"):
+        if (folder / ACCOUNT_FILE).exists():
+            raise AccountConfigError(f"account {account_id} exists (set its caps with `admin account caps`)")
+        if folder.exists():
+            shutil.rmtree(folder)
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ConnectionState(folder, require_existing=False).ensure()
+        atomic_write_json(
+            folder / ACCOUNT_FILE, {"created_at": int(time.time()), "instance_id": secrets.token_hex(12), **caps}
+        )
     return folder
 
 
 def set_caps(settings: Settings, account_id: str, max_fare: str | None, max_fare_24h: str | None) -> dict[str, str]:
     """Replace an account's caps; none at all makes it read-only. The server applies them on its next call."""
     folder = account_dir(settings, check_id(account_id))
-    data = _read(folder / ACCOUNT_FILE)
-    if data is None:
-        raise AccountConfigError(f"no account {account_id}")
     caps = _caps_record(max_fare, max_fare_24h)
-    data = {k: v for k, v in data.items() if k not in ("max_fare", "max_fare_24h")} | caps
-    atomic_write_json(folder / ACCOUNT_FILE, data)
+    with locked(settings.state_dir / ".connections-adoption.lock"):
+        data = _read(folder / ACCOUNT_FILE)
+        if data is None:
+            raise AccountConfigError(f"no account {account_id}")
+        data = {k: v for k, v in data.items() if k not in ("max_fare", "max_fare_24h")} | caps
+        atomic_write_json(folder / ACCOUNT_FILE, data)
     return caps
 
 
 def remove(settings: Settings, account_id: str) -> None:
     """Delete an account and everything kept for it: session, state, ledger and audit log."""
     folder = account_dir(settings, check_id(account_id))
-    if not (folder / ACCOUNT_FILE).exists():
-        raise AccountConfigError(f"no account {account_id}")
-    (folder / ACCOUNT_FILE).unlink()  # first: the server stops serving it at once
-    shutil.rmtree(folder)
+    with locked(settings.state_dir / ".connections-adoption.lock"):
+        if not (folder / ACCOUNT_FILE).exists():
+            raise AccountConfigError(f"no account {account_id}")
+        (folder / ACCOUNT_FILE).unlink()  # first: the server stops serving it at once
+        shutil.rmtree(folder)

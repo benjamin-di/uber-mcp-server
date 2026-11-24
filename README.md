@@ -511,3 +511,6 @@ Design ideas also came from [AriOliv/uber-mcp](https://github.com/AriOliv/uber-m
 ## License
 
 [MIT](https://github.com/benjamin-di/uber-mcp-server/blob/main/LICENSE).
+
+Recorded money outcomes, budget holds, local inspection and non-sending recovery are described in
+[Booking outcomes and local recovery](docs/booking-recovery.md).

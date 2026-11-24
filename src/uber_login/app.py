@@ -42,13 +42,15 @@ class PolicyMissing(Exception):
 
 async def run_browser(window: Window) -> dict[str, Any]:
     """Uber's sign-in page in a throwaway, locked-down browser on the window's display; the proven session."""
+    from signin_window.browser import browser_environment
+
     if not policy_installed():
         log.error("no sign-in window: the managed Chromium policy is not installed")
         raise PolicyMissing()
     return await sign_in(
         profile=window.temp_profile("uber-login-"),
         layout=window.layout,
-        env=window.env(),
+        env=window.env(base=browser_environment()),
         extra_args=("--window-position=0,0",),
         on_page=window.waiting,
         locked=True,

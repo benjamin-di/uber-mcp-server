@@ -58,7 +58,13 @@ def _activity(a: dict[str, Any]) -> dict[str, Any]:
 
 
 def trips(
-    uber: Uber, limit: int, cursor: str | None, include_details: bool = False, timezone: str | None = None
+    uber: Uber,
+    limit: int,
+    cursor: str | None,
+    include_details: bool = False,
+    timezone: str | None = None,
+    *,
+    require_upcoming: bool = False,
 ) -> dict[str, Any]:
     _zone(timezone)
     if not 1 <= limit <= 20:
@@ -75,11 +81,16 @@ def trips(
             "orderTypes": ["RIDES", "TRAVEL"],
             "profileType": "PERSONAL",
         },
+        strict=require_upcoming,
     ).get("activities")
     if not isinstance(data, dict):
         raise UberError("schema_changed", log_detail="activities not an object")
     past = (data.get("past") or {}).get("activities") or []
-    upcoming = (data.get("upcoming") or {}).get("activities") or []
+    upcoming_box = data.get("upcoming")
+    upcoming = upcoming_box.get("activities") if isinstance(upcoming_box, dict) else None
+    if require_upcoming and (not isinstance(upcoming, list) or any(not isinstance(a, dict) for a in upcoming)):
+        raise UberError("schema_changed", log_detail="upcoming activities missing or malformed")
+    upcoming = upcoming or []
     if not isinstance(past, list) or len(past) > limit:
         raise UberError("schema_changed", log_detail="history exceeds requested page size or is not a list")
     out = {

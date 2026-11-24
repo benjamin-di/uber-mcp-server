@@ -115,18 +115,32 @@ class Connections:
             return None
         return {**person, "account": account}
 
-    async def authorize(self, request, link, operation):
-        person = self.identity(request)
-        if not person or not link.context or person["account"] != link.context.owner:
+    def _authorize_sync(self, request, link, operation):
+        person = self.auth.identity(request)
+        if person is None or not link.context:
+            return False
+        account = (
+            self.config.bindings.get(person["sub"])
+            if self.config.bindings
+            else person["claims"].get(self.config.account_claim)
+        )
+        if not valid_id(account) or account != link.context.owner:
             return False
         try:
-            connection = self.registry.get(person["account"], allow_disconnected=True).session.connection
+            connection = self.registry.get(account, allow_disconnected=True).session.connection
+            control = connection.read()
+            owner = control.get("owner")
+            if owner is not None and owner != {"issuer": person["issuer"], "sub": person["sub"]}:
+                return False
             if operation == "start":
                 connection.bind_owner(person["issuer"], person["sub"])
-            control = connection.read()
+                control = connection.read()
             return control["epoch"] == link.context.target and control["state"] != "disconnecting"
         except UberError:
             return False
+
+    async def authorize(self, request, link, operation):
+        return await anyio.to_thread.run_sync(self._authorize_sync, request, link, operation)
 
     def status(self, person):
         service = self.registry.get(person["account"], allow_disconnected=True)
@@ -168,8 +182,16 @@ class Connections:
                 "account": session.get("account"),
                 "saved_at": session.get("saved_at"),
             }
+        if session.get("state") == "session_invalid":
+            return {
+                "state": "session_invalid",
+                "revision": control["epoch"],
+                "label": "Saved session unreadable",
+                "account": session.get("account"),
+                "saved_at": session.get("saved_at"),
+            }
         present = bool(session.get("generation"))
-        usable = present and session.get("state") not in ("dead", "session_invalid")
+        usable = present and session.get("state") != "dead"
         return {
             "state": "connected" if usable else "sign_in_needed",
             "revision": control["epoch"],
@@ -241,6 +263,11 @@ class Connections:
             controls = "<p>You can close this page while the connection is saved.</p>"
         elif state["state"] == "disconnecting":
             controls = self.form("disconnect", "Finish disconnecting", revision=state["revision"])
+        elif state["state"] == "session_invalid":
+            controls = (
+                "<p>The saved Uber session could not be read. Disconnect Uber first or ask your administrator to "
+                "check the session key, then reconnect.</p>"
+            )
         else:
             controls = self.form(
                 "start", "Reconnect" if state["state"] == "connected" else "Connect", revision=state["revision"]
@@ -288,7 +315,10 @@ class Connections:
     async def mutate(self, request, operation):
         person = self.identity(request)
         if person is None:
-            return Response("Sign-in required", status_code=401)
+            return self.recovery(
+                "Your Connections sign-in expired. Return to Uber connection to sign in again.",
+                status_code=401,
+            )
         if not self.auth.origin_ok(request):
             return Response("Request refused", status_code=403)
         service = self.registry.get(person["account"], allow_disconnected=True)
@@ -311,7 +341,12 @@ class Connections:
                 "Return to your Uber connection and check its status before trying again.",
                 status_code=409,
             )
-        except UberError:
+        except UberError as exc:
+            if exc.code == "connect_limited":
+                return self.recovery(
+                    "Too many sign-in attempts were started recently. Wait a few minutes before trying again.",
+                    status_code=429,
+                )
             return self.recovery(
                 "We could not finish this change. "
                 "Return to your Uber connection and check its status before trying again.",

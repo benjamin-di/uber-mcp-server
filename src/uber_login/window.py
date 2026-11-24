@@ -112,9 +112,12 @@ async def sign_in(
                 if not open_pages:
                     raise WindowClosed()
                 if on_page is not None:
-                    on_page(urlsplit(open_pages[0].url).hostname or "")
+                    active = open_pages[-1]
+                    on_page(urlsplit(active.url).hostname or "")
                 landed = next((pg for pg in open_pages if RIDES_LANDED.match(pg.url)), None)
                 if landed is not None:
+                    if on_page is not None:
+                        on_page(urlsplit(landed.url).hostname or "")
                     return await _hop_and_prove(ctx, landed)
                 await asyncio.sleep(WATCH_EVERY)
         finally:
@@ -151,7 +154,10 @@ async def _graphql(ctx: Any, surface: str, operation: str, variables: dict[str, 
             "origin": origin,
             "referer": origin + "/",
         },  # fmt: skip
+        max_redirects=0,
     )
+    if response.status != 200:
+        return {}
     try:
         payload = await response.json()
     except Exception:

@@ -7,6 +7,7 @@ match, echoed back with alternatives so the agent can check it).
 
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -84,33 +85,43 @@ class Places:
         self.uber = uber
         self._clock = clock
         self._lock = threading.Lock()
-        self._near: tuple[float, dict[str, float], dict[str, Any]] | None = None
-        self._saved: tuple[float, list[dict[str, Any]]] | None = None
+        self._near: tuple[int, float, dict[str, float], dict[str, Any]] | None = None
+        self._saved: tuple[int, float, list[dict[str, Any]]] | None = None
+
+    def _generation(self) -> int:
+        status = self.uber.session.status()
+        if status.get("state") in ("dead", "session_invalid", "not_signed_in", "none"):
+            return 0
+        return int(status.get("generation") or 0)
 
     # -- reads ------------------------------------------------------------------------------------------------
 
     def here(self) -> tuple[dict[str, float], dict[str, Any]]:
         """Uber's guess of where the rider is (the web app asks the same way) and the city it is in."""
+        gen = self._generation()
         with self._lock:
-            if self._near and self._clock() - self._near[0] < NEAR_TTL:
-                return self._near[1], self._near[2]
+            if gen > 0 and self._near and self._near[0] == gen and self._clock() - self._near[1] < NEAR_TTL:
+                return self._near[2], self._near[3]
         status = self.uber.graphql("GetStatus", {"latitude": 0, "longitude": 0}).get("status") or {}
         c, city = status.get("coordinate") or {}, status.get("city") or {}
         if not isinstance(c.get("latitude"), int | float) or not isinstance(c.get("longitude"), int | float):
             raise UberError("schema_changed", log_detail="GetStatus without coordinate")
         near = coordinate(float(c["latitude"]), float(c["longitude"]))
-        with self._lock:
-            self._near = (self._clock(), near, city)
+        if gen > 0 and self._generation() == gen:
+            with self._lock:
+                self._near = (gen, self._clock(), near, city)
         return near, city
 
     def saved(self) -> list[dict[str, Any]]:
+        gen = self._generation()
         with self._lock:
-            if self._saved and self._clock() - self._saved[0] < SAVED_TTL:
-                return list(self._saved[1])
+            if gen > 0 and self._saved and self._saved[0] == gen and self._clock() - self._saved[1] < SAVED_TTL:
+                return list(self._saved[2])
         places = self.uber.graphql("SavedPlaces").get("savedPlaces") or []
         places = [p for p in places if isinstance(p, dict) and p.get("id")]
-        with self._lock:
-            self._saved = (self._clock(), places)
+        if gen > 0 and self._generation() == gen:
+            with self._lock:
+                self._saved = (gen, self._clock(), places)
         return list(places)
 
     def search(self, query: str, near: dict[str, float] | None = None, kind: str = "DROPOFF") -> list[dict[str, Any]]:
@@ -129,7 +140,17 @@ class Places:
             {"id": place_id, "provider": provider, "source": source, "includeTimezone": True,
              "includeAirportTerminals": True},
         ).get("pudoResolveLocation")  # fmt: skip
-        if not isinstance(raw, dict) or not (raw.get("coordinate") or {}).get("latitude"):
+        coord = raw.get("coordinate") if isinstance(raw, dict) else None
+        lat = coord.get("latitude") if isinstance(coord, dict) else None
+        lng = coord.get("longitude") if isinstance(coord, dict) else None
+        if (
+            not isinstance(raw, dict)
+            or isinstance(lat, bool)
+            or isinstance(lng, bool)
+            or not isinstance(lat, int | float)
+            or not isinstance(lng, int | float)
+            or not (math.isfinite(lat) and math.isfinite(lng) and -90 <= lat <= 90 and -180 <= lng <= 180)
+        ):
             raise UberError("place_not_found", log_detail="resolve without coordinate")
         return raw
 

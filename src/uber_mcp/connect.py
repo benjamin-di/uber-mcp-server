@@ -24,9 +24,10 @@ from signin_window.relay import AttemptContext, Link, LinkLimited, Relay
 from starlette.applications import Starlette
 
 from . import accounts
+from .connection_state import ConnectionState
 from .errors import UberError
 from .fsio import locked
-from .session import Session, from_jar, mask_name
+from .session import from_jar, mask_name
 from .web_identity import identity_kwargs
 
 if TYPE_CHECKING:
@@ -39,7 +40,8 @@ TEXT = PageText(
     title="Connect your Uber account",
     help_html=(
         "Sign in to Uber in the remote browser below, using your password or a code from Uber. "
-        "Device passkeys do not work here. Paste with Ctrl+V or Cmd+V. This application keeps the signed-in session; "
+        "Device passkeys do not work here. Paste with Ctrl+V or Cmd+V on desktop, or use the Keyboard, Paste and "
+        "Zoom toolbar buttons on a phone. This application keeps the signed-in session; "
         "connecting does not change assistant permissions or booking approvals."
     ),
     intro_html=("Connect Uber for <b>{label}</b>. Sign in to the Uber account you want this application to use."),
@@ -141,7 +143,9 @@ class ConnectFlow:
 
         try:
             with tempfile.TemporaryDirectory(prefix=".connection-", dir=service.settings.state_dir) as folder:
-                settings = replace(service.settings, state_dir=Path(folder))
+                staging_dir = Path(folder)
+                ConnectionState(staging_dir, require_existing=False).ensure()
+                settings = replace(service.settings, state_dir=staging_dir)
                 staged = UberService(
                     settings, transport=service.uber.transport, shared=service.shared, account=service.account_id
                 )
@@ -176,19 +180,7 @@ class ConnectFlow:
 
     def _elsewhere(self, account: str, uuid: str) -> bool:
         """Whether another account on this server holds a session for this Uber rider."""
-        settings = self.registry.settings
-        for other in accounts.configured(settings):
-            if other == account:
-                continue
-            try:
-                other_settings = accounts.settings_for(settings, other)
-            except UberError:
-                continue
-            held = Session(other_settings.session_path, other_settings.session_key).account
-            bound = Session(other_settings.session_path, other_settings.session_key).connection.read()["rider"]
-            if bound == uuid or (held is not None and held.get("uuid") == uuid):
-                return True
-        return False
+        return accounts.rider_in_use_elsewhere(self.registry.settings, account, uuid)
 
     def app(self) -> Starlette:
         return self.relay.app()

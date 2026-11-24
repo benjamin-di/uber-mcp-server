@@ -27,7 +27,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .connection_state import ConnectionState
 from .errors import UberError
-from .fsio import atomic_write_bytes, file_key, locked, read_private
+from .fsio import _fsync_dir, atomic_write_bytes, file_key, locked, read_private
 
 log = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ class Session:
             return
         self._file, self._error = key, None
         held = self._held
-        if held is None or data["generation"] > held.generation:
+        if held is None or data["generation"] > held.generation or data["account"]["uuid"] != held.account.get("uuid"):
             if held is not None:
                 log.info("session generation %d -> %d", held.generation, data["generation"])
             self._held = Held(
@@ -243,8 +243,8 @@ class Session:
 
     # -- use --------------------------------------------------------------------------------------------------
 
-    def checkout(self) -> tuple[int, http.cookiejar.CookieJar, str]:
-        """The held generation, a cookie jar for one call and the signed-in browser's User-Agent."""
+    def checkout_with_identity(self) -> tuple[int, http.cookiejar.CookieJar, str, str | None, int | None]:
+        """Atomically check out generation, cookie jar, user-agent, rider UUID, and directory inode."""
         with self.connection.locked() as control, self._lock:
             if control["state"] != "active":
                 raise UberError("connection_disconnected")
@@ -252,36 +252,135 @@ class Session:
             held = self._held
             if self._error or held is None:
                 raise UberError(self._error or "not_signed_in")
+            if control["rider"] and held.account.get("uuid") != control["rider"]:
+                raise UberError("session_invalid", log_detail="session rider does not match connection binding")
             if held.state == "dead":
                 raise UberError("session_expired")
-            return held.generation, to_jar(held.cookies), held.user_agent
+            return held.generation, to_jar(held.cookies), held.user_agent, held.account.get("uuid"), self._dir_ino()
 
-    def store_jar(self, jar: http.cookiejar.CookieJar, generation: int) -> None:
+    def checkout(self) -> tuple[int, http.cookiejar.CookieJar, str]:
+        """The held generation, a cookie jar for one call and the signed-in browser's User-Agent."""
+        generation, jar, user_agent, _rider, _dir_ino = self.checkout_with_identity()
+        return generation, jar, user_agent
+
+    def _dir_ino(self) -> int | None:
+        try:
+            return os.stat(self.path.parent).st_ino
+        except OSError:
+            return None
+
+    def invalidate(self, generation: int, *, rider: str | None = None, dir_ino: int | None = None) -> None:
+        """Durably invalidate a generation bound to its checkout identity without touching a newer sign-in."""
+        if dir_ino is not None and self._dir_ino() != dir_ino:
+            return
+        try:
+            with self.connection.locked(), locked(self._lock_path):
+                if dir_ino is not None and self._dir_ino() != dir_ino:
+                    return
+                try:
+                    current = self._parse()
+                except FileNotFoundError:
+                    current = None
+                except ValueError:
+                    self.path.unlink(missing_ok=True)
+                    _fsync_dir(self.path.parent, strict=True)
+                    current = None
+                if (
+                    current is not None
+                    and current["generation"] == generation
+                    and (rider is None or current["account"].get("uuid") == rider)
+                ):
+                    self.path.unlink(missing_ok=True)
+                    _fsync_dir(self.path.parent, strict=True)
+        except (UberError, OSError) as exc:
+            log.error("could not durably invalidate session (%s)", type(exc).__name__)
+        with self._lock:
+            held = self._held
+            if (
+                held is not None
+                and held.generation == generation
+                and (rider is None or held.account.get("uuid") == rider)
+            ):
+                held.state = "dead"
+                held.dead_at = self._clock()
+                log.warning("session generation %d refused by Uber", generation)
+
+    def store_jar(
+        self,
+        jar: http.cookiejar.CookieJar,
+        generation: int,
+        baseline: list[dict[str, Any]] | None = None,
+        *,
+        rider: str | None = None,
+        dir_ino: int | None = None,
+    ) -> None:
         """Keep and persist the cookies Uber set during a call, unless a newer sign-in replaced the file."""
+        cookies = from_jar(jar)
+        if baseline is not None and cookies == baseline:
+            return
+        if dir_ino is not None and self._dir_ino() != dir_ino:
+            return
         try:
             with self.connection.locked() as control:
                 if control["state"] == "active":
-                    self._store_jar(jar, generation)
-        except UberError:
+                    if rider and control["rider"] and control["rider"] != rider:
+                        return
+                    self._store_jar(cookies, generation, baseline, rider=rider, dir_ino=dir_ino)
+        except (UberError, OSError):
             # A completed call retains its actual result; a disconnect or unreadable
             # barrier prevents write-back without masking an admitted money outcome.
             return
 
-    def _store_jar(self, jar: http.cookiejar.CookieJar, generation: int) -> None:
+    @staticmethod
+    def _merge_cookies(
+        current: list[dict[str, Any]],
+        updated: list[dict[str, Any]],
+        baseline: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        if baseline is None:
+            return updated
+        key = lambda c: (c["domain"], c["path"], c["name"])  # noqa: E731
+        base_map = {key(c): c for c in baseline}
+        upd_map = {key(c): c for c in updated}
+        merged = {key(c): c for c in current}
+        for k in set(base_map) - set(upd_map):
+            merged.pop(k, None)
+        for k, c in upd_map.items():
+            if base_map.get(k) != c:
+                merged[k] = c
+        return list(merged.values())
+
+    def _store_jar(
+        self,
+        cookies: list[dict[str, Any]],
+        generation: int,
+        baseline: list[dict[str, Any]] | None = None,
+        *,
+        rider: str | None = None,
+        dir_ino: int | None = None,
+    ) -> None:
         with self._lock:
             held = self._held
             if held is None or held.generation != generation or held.state == "dead":
                 return
-            cookies = from_jar(jar)
-            if cookies == held.cookies:
+            expected_rider = rider or held.account.get("uuid")
+            if expected_rider and held.account.get("uuid") != expected_rider:
                 return
-            held.cookies = cookies
+            merged_held = self._merge_cookies(held.cookies, cookies, baseline)
+            if merged_held == held.cookies:
+                return
             try:
                 with locked(self._lock_path):
+                    if dir_ino is not None and self._dir_ino() != dir_ino:
+                        return
                     current = self._parse()
                     if current["generation"] != generation:
                         return  # a newer sign-in won; the next call adopts it
-                    self._write({**current, "cookies": cookies})
+                    if expected_rider and current["account"].get("uuid") != expected_rider:
+                        return  # another rider occupies this slot
+                    merged_disk = self._merge_cookies(current["cookies"], cookies, baseline)
+                    held.cookies = merged_disk
+                    self._write({**current, "cookies": merged_disk})
                     self._file = file_key(self.path)
             except (OSError, ValueError) as exc:  # the in-memory cookies still apply to this process
                 log.error("could not persist the session (%s)", type(exc).__name__)

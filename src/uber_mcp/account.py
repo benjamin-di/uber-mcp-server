@@ -17,19 +17,33 @@ class Account:
         self.uber = uber
         self._clock = clock
         self._lock = threading.Lock()
-        self._cached: tuple[float, dict[str, Any]] | None = None
+        self._cached: tuple[int, float, dict[str, Any]] | None = None
+
+    def _generation(self) -> int:
+        status = self.uber.session.status()
+        if status.get("state") in ("dead", "session_invalid", "not_signed_in", "none"):
+            return 0
+        return int(status.get("generation") or 0)
 
     def user(self, fresh: bool = False) -> dict[str, Any]:
+        gen = self._generation()
         with self._lock:
-            if not fresh and self._cached and self._clock() - self._cached[0] < ACCOUNT_TTL:
-                return self._cached[1]
+            if (
+                not fresh
+                and gen > 0
+                and self._cached
+                and self._cached[0] == gen
+                and self._clock() - self._cached[1] < ACCOUNT_TTL
+            ):
+                return self._cached[2]
         user = self.uber.graphql(
             "CurrentUserRidersWeb", {"includeDelegateProfiles": False, "includeUserMemberships": True}
         ).get("currentUser")
         if not isinstance(user, dict) or not user.get("uuid"):
             raise UberError("schema_changed", log_detail="currentUser without uuid")
-        with self._lock:
-            self._cached = (self._clock(), user)
+        if gen > 0 and self._generation() == gen:
+            with self._lock:
+                self._cached = (gen, self._clock(), user)
         return user
 
     def payment_methods(self, user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -66,10 +80,12 @@ class Account:
             if method is None:
                 raise UberError("payment_not_found", log_detail="no payment method on the account")
         profiles = [p for p in user.get("profiles") or [] if isinstance(p, dict) and p.get("uuid")]
-        profile = next((p for p in profiles if p.get("type") == "Personal"), profiles[0] if profiles else None)
-        if profile is None:
+        if not profiles:
             raise UberError("schema_changed", log_detail="no rider profile")
-        return {"method": method, "profile": {"uuid": profile["uuid"], "type": profile.get("type") or "Personal"}}
+        profile = next((p for p in profiles if p.get("type") == "Personal"), None)
+        if profile is None:
+            raise UberError("payment_not_found", log_detail="no personal rider profile")
+        return {"method": method, "profile": {"uuid": profile["uuid"], "type": "Personal"}}
 
     def summary(self) -> dict[str, Any]:
         user = self.user(fresh=True)
