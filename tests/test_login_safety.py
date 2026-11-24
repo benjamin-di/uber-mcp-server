@@ -80,8 +80,93 @@ def test_the_runner_opens_ubers_page_on_the_windows_display():
     finally:
         app.sign_in, app.policy_installed = original, installed
     assert seen["env"]["DISPLAY"] == ":92" and seen["layout"] == "phone" and seen["profile"] in window.profiles
+    assert seen["channel"] == "chrome"
+    assert "--enable-unsafe-swiftshader" in seen["extra_args"]
     assert window.state == "waiting" and window.host == "auth.uber.com"
     assert seen["locked"] is True  # kiosk mode, Ctrl+T/Ctrl+N closed (signin-window's browser)
+
+
+def test_phone_layout_uses_genuine_browser_identity_and_matches_xvfb_size(monkeypatch, tmp_path):
+    import asyncio
+    import sys
+    import types
+
+    from uber_login import window
+    from uber_login.window import LAYOUTS
+
+    assert LAYOUTS["phone"] == {"size": (500, 900), "user_agent": None}
+    assert LAYOUTS["desktop"] == {"size": (1280, 860), "user_agent": None}
+
+    # Verify effective launch_persistent_context arguments for local vs hosted launches:
+    # Patchright's macOS driver appends --enable-unsafe-swiftshader by default, so local CLI
+    # launches must explicitly filter it via ignore_default_args while hosted container runs allow it.
+    calls: list[dict] = []
+
+    class StopLaunch(RuntimeError):
+        pass
+
+    class FakeChromium:
+        async def launch_persistent_context(self, profile, **kwargs):
+            calls.append({"profile": profile, **kwargs})
+            raise StopLaunch()
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    fake_pkg = types.ModuleType("patchright")
+    fake_async = types.ModuleType("patchright.async_api")
+    fake_async.async_playwright = FakePlaywright
+    fake_pkg.async_api = fake_async
+    monkeypatch.setitem(sys.modules, "patchright", fake_pkg)
+    monkeypatch.setitem(sys.modules, "patchright.async_api", fake_async)
+
+    try:
+        asyncio.run(window.sign_in(profile=str(tmp_path / "local"), layout="desktop"))
+    except StopLaunch:
+        pass
+    try:
+        asyncio.run(
+            window.sign_in(
+                profile=str(tmp_path / "hosted"),
+                layout="phone",
+                channel="chrome",
+                extra_args=("--window-position=0,0", "--enable-unsafe-swiftshader"),
+                locked=True,
+            )
+        )
+    except StopLaunch:
+        pass
+
+    assert len(calls) == 2
+    local_call, hosted_call = calls
+    assert "--enable-unsafe-swiftshader" not in local_call["args"]
+    assert "--enable-unsafe-swiftshader" in (local_call["ignore_default_args"] or ())
+    assert local_call["user_agent"] is None
+    assert "--enable-unsafe-swiftshader" in hosted_call["args"]
+    assert hosted_call["ignore_default_args"] is None
+    assert hosted_call["channel"] == "chrome"
+    assert hosted_call["user_agent"] is None
+
+
+def test_chrome_policy_check_requires_google_chrome_policy_dir(tmp_path, monkeypatch):
+    from signin_window.browser import install_policy
+
+    from uber_login import app
+
+    cft_dir = tmp_path / "chrome_for_testing"
+    chrome_dir = tmp_path / "chrome"
+    install_policy((cft_dir,))
+    monkeypatch.setattr(app, "CHROME_POLICY_DIR", chrome_dir)
+    # Chrome for Testing policy alone must not satisfy Google Chrome's policy requirement.
+    assert app.policy_installed() is False
+    install_policy((chrome_dir,))
+    assert app.policy_installed() is True
 
 
 def test_no_window_opens_without_the_managed_policy():

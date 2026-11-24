@@ -94,6 +94,8 @@ class Connections:
             # the window opens at once: the intro only matters for a link handed to someone.
             text=replace(TEXT, reconnect=True, auto_start=True, return_url=self.path),
         )
+        self._pending_close: dict[str, list] = {}
+        self._draining_accounts: set[str] = set()
 
     def identity(self, request):
         person = self.auth.identity(request)
@@ -126,6 +128,8 @@ class Connections:
         )
         if not valid_id(account) or account != link.context.owner:
             return False
+        if link.closed or account in self._draining_accounts:
+            return False
         try:
             connection = self.registry.get(account, allow_disconnected=True).session.connection
             control = connection.read()
@@ -156,22 +160,29 @@ class Connections:
                 "account": session.get("account"),
                 "saved_at": session.get("saved_at"),
             }
-        pending = [
-            link
-            for link in self.flow.relay.links(person["account"])
-            if not link.closed
-            and link.state in ("ready", "starting", "waiting", "saving")
-            and link.context
-            and link.context.target == control["epoch"]
-        ]
+        pending = (
+            []
+            if person["account"] in self._draining_accounts
+            else [
+                link
+                for link in self.flow.relay.links(person["account"])
+                if not link.closed
+                and link.state in ("ready", "starting", "waiting", "saving")
+                and link.context
+                and link.context.target == control["epoch"]
+            ]
+        )
         if pending:
             link = pending[-1]
             saving = link.state == "saving"
+            layout = getattr(link, "layout", "")
+            view_note = " (mobile view)" if layout == "phone" else " (desktop view)" if layout == "desktop" else ""
             return {
                 "state": "saving" if saving else "connecting",
                 "revision": control["epoch"],
-                "label": "Saving connection" if saving else "Sign-in in progress",
+                "label": "Saving connection" if saving else f"Sign-in in progress{view_note}",
                 "url": link.url,
+                "layout": layout,
                 "account": session.get("account"),
             }
         if control["state"] == "disconnected":
@@ -213,7 +224,7 @@ class Connections:
             else "quiet"
             if action == "logout"
             else "secondary"
-            if label == "Reconnect"
+            if label in ("Reconnect", "Start new sign-in")
             else "primary"
         )
         form = (
@@ -258,7 +269,10 @@ class Connections:
             )
         state = self.status(person)
         if state["state"] == "connecting":
-            controls = f'<a href="{html.escape(state["url"], quote=True)}">Continue sign-in</a>'
+            controls = (
+                f'<a class="button" href="{html.escape(state["url"], quote=True)}">Continue sign-in</a>'
+                + self.form("start", "Start new sign-in", revision=state["revision"])
+            )
         elif state["state"] == "saving":
             controls = "<p>You can close this page while the connection is saved.</p>"
         elif state["state"] == "disconnecting":
@@ -306,6 +320,11 @@ class Connections:
         )
         return HTMLResponse(self.page("Uber connection", body), status_code=status_code)
 
+    @staticmethod
+    def _link_still_open(link) -> bool:
+        with link.lock:
+            return link.window_id is not None or link.closing or link.state in ("starting", "waiting", "saving")
+
     async def start(self, request):
         return await self.mutate(request, "start")
 
@@ -330,7 +349,48 @@ class Connections:
                     raise ValueError("Connection changed; reload")
                 connection.bind_owner(person["issuer"], person["sub"])
                 if operation == "start":
-                    link = self.flow.create(service, expected_revision=expected)
+                    account = person["account"]
+                    still_open = []
+                    for held in self._pending_close.get(account, ()):
+                        await anyio.to_thread.run_sync(lambda target=held: self.flow.relay.cancel(target))
+                        if self._link_still_open(held):
+                            still_open.append(held)
+                    if still_open:
+                        self._pending_close[account] = still_open
+                        return self.recovery(
+                            "The previous sign-in window is still closing. "
+                            "Return to your Uber connection and wait a moment before starting a new sign-in.",
+                            status_code=409,
+                        )
+                    self._pending_close.pop(account, None)
+                    previous = self.flow.relay.links(account)
+                    if any(old.state == "saving" for old in previous):
+                        return self.recovery(
+                            "A previous sign-in is still finishing. "
+                            "Return to your Uber connection and wait a moment before trying again.",
+                            status_code=409,
+                        )
+                    self._draining_accounts.add(account)
+                    try:
+                        link = self.flow.create(service, expected_revision=expected)
+                        # Cancel every replaced link unconditionally so cancel() acquires link.lock and waits for
+                        # any in-flight start() or backend teardown to complete before exposing the replacement.
+                        for old in previous:
+                            await anyio.to_thread.run_sync(lambda held=old: self.flow.relay.cancel(held))
+                            if self._link_still_open(old):
+                                still_open.append(old)
+                        if still_open:
+                            self._pending_close[account] = still_open
+                            for created in self.flow.relay.links(account):
+                                if created.url == link["url"]:
+                                    created.closed = True
+                            return self.recovery(
+                                "The previous sign-in window is still closing. "
+                                "Return to your Uber connection and wait a moment before starting a new sign-in.",
+                                status_code=409,
+                            )
+                    finally:
+                        self._draining_accounts.discard(account)
                     return RedirectResponse(link["url"], status_code=303)
                 await anyio.to_thread.run_sync(lambda: connection.disconnect(service.session))
                 for link in self.flow.relay.links(person["account"]):

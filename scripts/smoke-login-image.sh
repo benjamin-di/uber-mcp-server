@@ -2,10 +2,25 @@
 # The browser/display, refusal and offline clipboard acceptance of the login image.
 set -euo pipefail
 image="${1:?image digest required}"
+expected_version="${EXPECTED_VERSION:-}"
+expected_revision="${EXPECTED_REVISION:-}"
+if [ -z "$expected_revision" ] && [[ "${2:-}" =~ ^[a-f0-9]{40}$ ]]; then
+    expected_revision="$2"
+fi
 [[ "$image" =~ @sha256:[a-f0-9]{64}$ ]] || exit 2
 docker pull -q "$image" >/dev/null
-revision="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")"
-version="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")"
+label_revision="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")"
+label_version="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.version"}}' "$image")"
+version="${expected_version:-$label_version}"
+revision="${expected_revision:-$label_revision}"
+if [ -n "$expected_version" ] && [ "$label_version" != "$expected_version" ]; then
+    echo "ERROR: image version label '$label_version' != expected '$expected_version'" >&2
+    exit 1
+fi
+if [ -n "$expected_revision" ] && [ "$label_revision" != "$expected_revision" ]; then
+    echo "ERROR: image revision label '$label_revision' != expected '$expected_revision'" >&2
+    exit 1
+fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 docker run --rm --network none --read-only --tmpfs /tmp \
     --mount "type=bind,src=$ROOT/scripts/check-build-identity.py,dst=/identity-acceptance.py,readonly" \
@@ -15,7 +30,8 @@ docker run --rm --network none --entrypoint sh "$image" -c '
     [ "$(id -u)" = 1000 ]
     python -c "import uber_login.app, uber_login.window, signin_window.service, patchright"
     command -v Xvfb >/dev/null && command -v x11vnc >/dev/null
-    ls /ms-patchright | grep -q chromium
+    command -v google-chrome-stable >/dev/null
+    python -c "import uber_login.app as a; assert a.policy_installed()"
     [ -f /opt/novnc/vnc.html ] && [ -f /opt/novnc/core/rfb.js ]
     ls /usr/share/fonts/opentype/noto/ | grep -q CJK'
 rc=0

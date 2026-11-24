@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.1] - 2026-11-24
+
+### Fixed
+
+- Remove the spoofed Android mobile User-Agent on `"phone"` sign-in windows (aligning window size to `500x900` with `user_agent=None`), eliminating contradictory Client Hints and platform signals that triggered repeated anti-bot puzzle loops on mobile logins.
+- Switch `Dockerfile.login` from Chrome for Testing to SHA-256-verified pinned `google-chrome-stable` (`channel="chrome"`) with Mesa/Vulkan libraries and `--enable-unsafe-swiftshader` WebGL fallback so remote sign-in windows report a genuine Chrome brand and working WebGL.
+- Upgrade `signin-window` to `0.10.0`, fixing desktop viewer over-scaling and vertical clipping (1:1 aspect-fit with centered framing and fine-pointer toolbar auto-hide), adding a one-click layout-mismatch switcher, header Restart button, one-tap mobile Paste, and an inline passkey notice.
+- Surface the active sign-in view layout (`mobile view` / `desktop view`) and a `Start new sign-in` control alongside `Continue sign-in` on `/connections/`.
+
+### Upgrade
+
+- Action required: none.
+- Rollback: compatible with 0.6.0 (verified by `make rollback-check`); saved sessions, connection controls, and booking/audit storage formats are unchanged. Upgrading `signin-window` to `0.10.0` adds `revocations` and `session_families` tables to the OIDC `browser-sessions` SQLite store that 0.6.0 ignores while continuing to read and write sessions and pending states (already-logged-out sessions are deleted from `sessions`). Wait 10 minutes after a Connections sign-out or clear `browser-sessions/` before starting 0.6.0 if an in-flight OAuth callback revocation must remain fenced.
+
 ## [0.6.0] - 2026-11-24
 
 ### Security

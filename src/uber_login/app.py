@@ -21,10 +21,13 @@ if TYPE_CHECKING:
     from signin_window.service import Window
 
 
+CHROME_POLICY_DIR = Path("/etc/opt/chrome/policies/managed")
+
+
 def policy_installed() -> bool:
     from signin_window.browser import policy_installed as installed
 
-    return installed()
+    return installed(dirs=(CHROME_POLICY_DIR,))
 
 
 async def sign_in(**kwargs: Any) -> dict[str, Any]:
@@ -51,7 +54,8 @@ async def run_browser(window: Window) -> dict[str, Any]:
         profile=window.temp_profile("uber-login-"),
         layout=window.layout,
         env=window.env(base=browser_environment()),
-        extra_args=("--window-position=0,0",),
+        channel="chrome",
+        extra_args=("--window-position=0,0", "--enable-unsafe-swiftshader"),
         on_page=window.waiting,
         locked=True,
     )

@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 # uber-mcp-login: the browser a person signs in to Uber with (src/uber_login), shown to them through noVNC on its
-# view page. A virtual display (Xvfb), a remote-desktop server on loopback (x11vnc), patchright's Chromium and CJK
-# fonts (Uber shows the rider's language). It never automates the sign-in (tests/test_login_safety.py).
+# view page. A virtual display (Xvfb), a remote-desktop server on loopback (x11vnc), pinned Google Chrome stable,
+# Mesa/Vulkan for hardware or SwiftShader WebGL, and CJK fonts (Uber shows the rider's language). It never automates
+# the sign-in (tests/test_login_safety.py).
 FROM ghcr.io/astral-sh/uv:0.9.26@sha256:9a23023be68b2ed09750ae636228e903a54a05ea56ed03a934d00fe9fbeded4b AS uv
 
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS browser-node
@@ -19,11 +20,14 @@ RUN test "$(browser-node --version)" = v24.22.1
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-patchright \
     HOME=/home/login \
     UBER_LOGIN_NOVNC=/opt/novnc
 
 COPY --from=uv /uv /usr/local/bin/
+
+# Pinned Google Chrome stable (amd64) verified by SHA-256: genuine Google Chrome brand and codecs, never unpinned.
+ARG CHROME_VERSION=158.0.8127.88-1
+ARG CHROME_SHA256=a656b2db00a8cb7f13a1d754f6aad91f84014906452c6dfb7f3ead93035da03b
 
 RUN apt-get update && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends \
@@ -31,8 +35,20 @@ RUN apt-get update && apt-get upgrade -y --no-install-recommends \
       curl \
       dumb-init \
       fonts-noto-cjk \
+      libegl1 \
+      libgl1 \
+      libgl1-mesa-dri \
+      libvulkan1 \
+      mesa-vulkan-drivers \
       x11vnc \
       xvfb \
+ && curl --fail --silent --show-error --location \
+      "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_amd64.deb" \
+      -o /tmp/google-chrome-stable.deb \
+ && printf '%s  /tmp/google-chrome-stable.deb\n' "${CHROME_SHA256}" | sha256sum --check --status \
+ && apt-get install -y --no-install-recommends /tmp/google-chrome-stable.deb \
+ && rm -f /tmp/google-chrome-stable.deb \
+ && google-chrome-stable --version \
  && rm -rf /var/lib/apt/lists/*
 
 # noVNC's own viewer (static files only; the WebSocket bridge is the service's, behind each sign-in's view token).
@@ -47,12 +63,11 @@ RUN curl --fail --silent --show-error --location \
       "noVNC-${NOVNC_VERSION}/vnc.html" \
  && rm /tmp/novnc.tar.gz
 
-# Locked dependencies first, so a code-only release reuses the Chromium layer.
+# Locked dependencies first, so a code-only release reuses the Chrome layer.
 COPY requirements-login.lock /tmp/requirements-login.lock
 RUN uv pip install --system --compile-bytecode --require-hashes -r /tmp/requirements-login.lock \
- && patchright install --with-deps chromium \
  && python -m signin_window.browser install-policy \
- && rm -rf /var/lib/apt/lists/* /tmp/requirements-login.lock \
+ && rm -rf /tmp/requirements-login.lock \
  && useradd --uid 1000 --home-dir /home/login --shell /usr/sbin/nologin login \
  && install -d -o 1000 -g 1000 -m 0700 /home/login
 

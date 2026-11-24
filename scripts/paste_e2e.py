@@ -102,7 +102,10 @@ async def main() -> int:
             window manager, keys go to the window under the pointer)."""
             width, height = window.size
             browser = await pw.chromium.launch(
-                headless=False, env=window.env(), args=["--window-position=0,0", f"--window-size={width},{height}"]
+                channel="chrome",
+                headless=False,
+                env=window.env(),
+                args=["--window-position=0,0", f"--window-size={width},{height}", "--enable-unsafe-swiftshader"],
             )
             try:
                 page = await browser.new_page(no_viewport=True)
@@ -167,7 +170,7 @@ async def main() -> int:
         assert link["account_id"] == "e2e" and link["url"] == f"{base}/connections/", link
         print("link made for the caller's account")
 
-        viewer = await pw.chromium.launch(headless=True)
+        viewer = await pw.chromium.launch(channel="chrome", headless=True)
         context = await viewer.new_context(viewport={"width": 1280, "height": 800})
         browser_auth = BrowserAuth(oidc)
         sid = secrets.token_urlsafe(32)

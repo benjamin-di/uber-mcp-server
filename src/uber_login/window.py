@@ -32,12 +32,9 @@ RIDERS_LANDED = re.compile(r"https://riders\.uber\.com/")
 DOCUMENT_HOSTS = ("uber.com", "accounts.google.com", "appleid.apple.com")
 LAYOUTS = {
     "desktop": {"size": (1280, 860), "user_agent": None},
-    # A phone-sized window gets Uber's mobile pages only with a mobile browser identity.
-    "phone": {
-        "size": (430, 900),
-        "user_agent": "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/149.0.0.0 Mobile Safari/537.36",
-    },
+    # Uber's auth page is responsive at 500x900 (Chromium's minimum window width and signin-window's Xvfb size);
+    # keep the browser's genuine identity instead of spoofing a mobile UA that contradicts Linux Client Hints.
+    "phone": {"size": (500, 900), "user_agent": None},
 }
 WATCH_EVERY = 1.5
 
@@ -77,6 +74,7 @@ async def sign_in(
     from patchright.async_api import async_playwright
 
     width, height = LAYOUTS[layout]["size"]
+    allow_swiftshader = "--enable-unsafe-swiftshader" in extra_args
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
             profile,
@@ -85,6 +83,7 @@ async def sign_in(
             no_viewport=True,
             user_agent=LAYOUTS[layout]["user_agent"],
             env=dict(env) if env is not None else None,
+            ignore_default_args=None if allow_swiftshader else ["--enable-unsafe-swiftshader"],
             args=[
                 f"--window-size={width},{height}",
                 *extra_args,

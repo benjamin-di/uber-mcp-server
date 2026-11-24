@@ -121,7 +121,8 @@ writes them minified to `operations.json` with the date. It fails, naming them, 
 
 - The sign-in window opens `/go/login-redirect` on `m.uber.com`, which sends the browser to `auth.uber.com` (a code,
   Google, Apple or a QR code, behind Uber's bot checks) and back to `m.uber.com/go/...`.
-- A phone-sized window gets Uber's mobile pages only with a mobile browser identity (`User-Agent`).
+- Both desktop (`1280×860`) and phone (`500×900`) sign-in windows use the browser's genuine identity without spoofing
+  a mobile `User-Agent`; `auth.uber.com` renders responsively at `500×900`.
 - The cookies of that browser work over plain HTTP with its `User-Agent`; the session file keeps both.
 
 ## Native Reserve

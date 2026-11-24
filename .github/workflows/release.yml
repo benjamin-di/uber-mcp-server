@@ -135,29 +135,9 @@ jobs:
           candidate="$REG/$LOGIN_IMAGE:$BUILD_REF"
           bash scripts/build-image.sh "$candidate" Dockerfile.login "$VCS_REF" "$BUILD_DATE" "$REG/$LOGIN_IMAGE:buildcache"
           digest="$(docker buildx imagetools inspect "$candidate" --format '{{json .Manifest}}' | jq -er .digest)"
-          docker pull -q "$REG/$LOGIN_IMAGE@$digest" >/dev/null
-          image="$REG/$LOGIN_IMAGE@$digest"
           product_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          docker run --rm --network none --read-only --tmpfs /tmp \
-            --mount "type=bind,src=$PWD/scripts/check-build-identity.py,dst=/identity-acceptance.py,readonly" \
-            --entrypoint python "$image" -I /identity-acceptance.py "$product_version" "$VCS_REF"
-          # Smoke: the browser, display, remote-desktop server, viewer and CJK fonts are there; the service
-          # refuses to start without its bearer; it never runs as root.
-          docker run --rm --network none --entrypoint sh "$image" -c '
-            set -e
-            [ "$(id -u)" = 1000 ]
-            python -c "import uber_login.app, uber_login.window, signin_window.service, patchright"
-            command -v Xvfb >/dev/null && command -v x11vnc >/dev/null
-            ls /ms-patchright | grep -q chromium
-            [ -f /opt/novnc/vnc.html ] && [ -f /opt/novnc/core/rfb.js ]
-            ls /usr/share/fonts/opentype/noto/ | grep -q CJK'
-          rc=0
-          timeout 60 docker run --rm --network none "$image" || rc=$?
-          [ "$rc" = 1 ] || { echo "ERROR: expected a refusal without UBER_LOGIN_TOKEN, got exit $rc" >&2; exit 1; }
-          # End to end, offline: a sign-in link from the server, its page and live view in a headless Chromium, and
-          # Ctrl+V typing the clipboard into the window (scripts/paste_e2e.py; a stand-in page instead of Uber's).
-          timeout 300 docker run --rm --network none -v "$PWD/scripts/paste_e2e.py:/tmp/paste_e2e.py:ro" \
-            --entrypoint python "$image" /tmp/paste_e2e.py
+          EXPECTED_VERSION="$product_version" EXPECTED_REVISION="$VCS_REF" \
+            bash scripts/smoke-login-image.sh "$REG/$LOGIN_IMAGE@$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Promote verified immutable refs
         env:

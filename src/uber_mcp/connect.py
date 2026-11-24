@@ -40,8 +40,8 @@ TEXT = PageText(
     title="Connect your Uber account",
     help_html=(
         "Sign in to Uber in the remote browser below, using your password or a code from Uber. "
-        "Device passkeys do not work here. Paste with Ctrl+V or Cmd+V on desktop, or use the Keyboard, Paste and "
-        "Zoom toolbar buttons on a phone. This application keeps the signed-in session; "
+        "Device passkeys do not work here. Paste with Ctrl+V or Cmd+V on desktop, or tap Paste, Keyboard and "
+        "Zoom on a phone. This application keeps the signed-in session; "
         "connecting does not change assistant permissions or booking approvals."
     ),
     intro_html=("Connect Uber for <b>{label}</b>. Sign in to the Uber account you want this application to use."),
@@ -49,6 +49,7 @@ TEXT = PageText(
     secure_host=r"(^|\.)uber\.com$",
     host_label="🔒 uber.com",
     starting="Opening Uber…",
+    notice="Use SMS, email code, or password — passkeys aren't available in this remote window.",
 ).with_outcomes(
     connected=(
         "<p class=ok>✓</p><h1>Connection saved</h1><p>Your Uber sign-in is saved. You can close this page "

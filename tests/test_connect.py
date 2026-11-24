@@ -67,7 +67,9 @@ class FakeLogin:
     def result(self, login_id: str) -> dict | None:
         return self.results.pop(login_id, None)
 
-    def close(self, login_id: str) -> None:
+    def close(self, login_id: str, *, cancel_only: bool = False) -> None:
+        if cancel_only and self.states.get(login_id, {}).get("state") in ("saving", "signed_in"):
+            return
         self.closed.append(login_id)
         self.states.pop(login_id, None)
 
@@ -339,7 +341,12 @@ def test_a_sign_in_lands_in_the_links_account_only_and_is_proven(http, login, re
     path = owner_link(http)
     assert http.post(path + "/start", json={"layout": "phone"}).json()["state"] == "starting"
     assert login.started == ["phone"]
-    assert http.get(path + "/state").json() == {"state": "waiting", "host": "auth.uber.com"}
+    assert http.get(path + "/state").json() == {
+        "state": "waiting",
+        "host": "auth.uber.com",
+        "layout": "phone",
+        "can_restart": True,
+    }
     main_before = Session(registry.settings.session_path, registry.settings.session_key).status()["generation"]
     login.sign_in("login-00000000000", uuid=OTHER_RIDER, name="Sam")
     done = settled_state(http, path)
@@ -602,8 +609,199 @@ def test_reconnect_can_be_resumed_from_home_while_backend_access_stays_disconnec
     connection_action(http, "disconnect", follow_redirects=False)
     connection_action(http, "start", follow_redirects=False)
     state = http.get("/connections/status").json()
-    assert state["state"] == "connecting" and "Continue sign-in" in http.get("/connections/").text
+    home = http.get("/connections/").text
+    assert state["state"] == "connecting" and "Continue sign-in" in home and "Start new sign-in" in home
     assert registry.get("second", allow_disconnected=True).session.connection.read()["state"] == "disconnected"
+    # Starting a new sign-in from the connecting screen cleanly replaces the active attempt.
+    replaced = connection_action(http, "start", data={"revision": state["revision"]}, follow_redirects=False)
+    assert replaced.status_code == 303 and replaced.headers["location"] != state["url"]
+
+
+def test_connecting_status_surfaces_active_layout_label(http):
+    link_path = owner_link(http)
+    assert http.post(f"{link_path}/start", json={"layout": "phone"}).status_code == 200
+    state = http.get("/connections/status").json()
+    assert state["state"] == "connecting"
+    assert state["layout"] == "phone"
+    assert state["label"] == "Sign-in in progress (mobile view)"
+    assert "Sign-in in progress (mobile view)" in http.get("/connections/").text
+
+
+def test_start_new_signin_releases_single_slot_before_redirecting(http, login):
+    from signin_window.client import LoginBusy
+
+    original_start = login.start
+    original_close = login.close
+
+    def single_slot_start(layout="desktop", **params):
+        if any(s.get("state") in ("starting", "waiting") for s in login.states.values()):
+            raise LoginBusy()
+        return original_start(layout, **params)
+
+    def delayed_close(login_id, *, cancel_only=False):
+        time.sleep(0.05)
+        return original_close(login_id, cancel_only=cancel_only)
+
+    login.start = single_slot_start
+    login.close = delayed_close
+    first = owner_link(http)
+    assert http.post(f"{first}/start", json={"layout": "phone"}).json()["state"] == "starting"
+    state = http.get("/connections/status").json()
+    # Starting a new sign-in waits for the previous active window's slot to close before redirecting.
+    replaced = connection_action(http, "start", data={"revision": state["revision"]}, follow_redirects=False)
+    assert replaced.status_code == 303
+    new_path = replaced.headers["location"].removeprefix("https://example.com/uber")
+    assert http.post(f"{new_path}/start", json={"layout": "desktop"}).json()["state"] == "starting"
+    assert login.closed == ["login-00000000000"]
+
+
+def test_start_new_signin_returns_recovery_when_previous_slot_stays_open(http, login):
+    from signin_window.client import LoginBusy
+
+    original_start = login.start
+    original_close = login.close
+    stuck = True
+
+    def single_slot_start(layout="desktop", **params):
+        if any(s.get("state") in ("starting", "waiting") for s in login.states.values()):
+            raise LoginBusy()
+        return original_start(layout, **params)
+
+    def maybe_stuck_close(login_id, *, cancel_only=False):
+        if stuck:
+            # Simulate a backend that acknowledged cancellation while teardown timed out (still waiting).
+            login.states[login_id]["state"] = "waiting"
+            return
+        return original_close(login_id, cancel_only=cancel_only)
+
+    login.start = single_slot_start
+    login.close = maybe_stuck_close
+    first = owner_link(http)
+    assert http.post(f"{first}/start", json={"layout": "phone"}).json()["state"] == "starting"
+    assert http.get(f"{first}/state").json()["state"] == "waiting"
+    state = http.get("/connections/status").json()
+    # While the previous window is still closing, Start new sign-in returns 409 recovery instead of 303 -> busy.
+    pending = connection_action(http, "start", data={"revision": state["revision"]}, follow_redirects=False)
+    assert pending.status_code == 409
+    assert "still closing" in pending.text
+    # A second retry while still stuck returns 409 without creating a replacement link.
+    state = http.get("/connections/status").json()
+    still_pending = connection_action(http, "start", data={"revision": state["revision"]}, follow_redirects=False)
+    assert still_pending.status_code == 409
+    # Once the backend finishes closing, retrying Start new sign-in redirects cleanly and starts without LoginBusy.
+    stuck = False
+    state = http.get("/connections/status").json()
+    replaced = connection_action(http, "start", data={"revision": state["revision"]}, follow_redirects=False)
+    assert replaced.status_code == 303
+    new_path = replaced.headers["location"].removeprefix("https://example.com/uber")
+    assert http.post(f"{new_path}/start", json={"layout": "desktop"}).json()["state"] == "starting"
+
+
+def test_start_new_signin_rate_limit_preserves_active_window(http, login):
+    first = owner_link(http)
+    assert http.post(f"{first}/start", json={"layout": "phone"}).json()["state"] == "starting"
+    state = http.get("/connections/status").json()
+    FLOWS[-1].relay.links_per_hour = 1
+    limited = connection_action(http, "start", data={"revision": state["revision"]}, follow_redirects=False)
+    assert limited.status_code == 429
+    # The existing active sign-in window must remain open when replacement creation is refused.
+    assert login.closed == []
+    assert http.get(f"{first}/state").json()["state"] == "waiting"
+
+
+def test_start_new_signin_waits_for_inflight_start_before_redirecting(http, login):
+    import threading
+
+    from signin_window.client import LoginBusy
+
+    original_start = login.start
+    original_close = login.close
+    entered = threading.Event()
+    release = threading.Event()
+    slot_held = False
+
+    def single_slot_inflight_start(layout="desktop", **params):
+        nonlocal slot_held
+        if slot_held or any(s.get("state") in ("starting", "waiting") for s in login.states.values()):
+            raise LoginBusy()
+        slot_held = True
+        if not entered.is_set():
+            entered.set()
+            release.wait(timeout=5)
+        return original_start(layout, **params)
+
+    def releasing_close(login_id, *, cancel_only=False):
+        nonlocal slot_held
+        original_close(login_id, cancel_only=cancel_only)
+        slot_held = False
+
+    login.start = single_slot_inflight_start
+    login.close = releasing_close
+    first = owner_link(http)
+    state = http.get("/connections/status").json()
+
+    # Hold the first start inside backend.start() after claiming the single slot (relay link is still "ready").
+    first_result = {}
+
+    def run_first():
+        first_result["response"] = http.post(f"{first}/start", json={"layout": "phone"})
+
+    starter = threading.Thread(target=run_first, daemon=True)
+    starter.start()
+    assert entered.wait(timeout=5)
+
+    # Release the held start slightly after replacement begins waiting on link.lock.
+    threading.Timer(0.05, release.set).start()
+    replaced = connection_action(http, "start", data={"revision": state["revision"]}, follow_redirects=False)
+    starter.join(timeout=5)
+    assert replaced.status_code == 303
+    new_path = replaced.headers["location"].removeprefix("https://example.com/uber")
+    assert http.post(f"{new_path}/start", json={"layout": "desktop"}).json()["state"] == "starting"
+    assert login.closed == ["login-00000000000"]
+
+
+def test_second_tab_cannot_see_or_start_replacement_while_previous_teardown_runs(http, login):
+    import threading
+
+    original_close = login.close
+    closing_entered = threading.Event()
+    allow_close_finish = threading.Event()
+
+    def gated_close(login_id, *, cancel_only=False):
+        closing_entered.set()
+        allow_close_finish.wait(timeout=5)
+        return original_close(login_id, cancel_only=cancel_only)
+
+    login.close = gated_close
+    first = owner_link(http)
+    assert http.post(f"{first}/start", json={"layout": "phone"}).json()["state"] == "starting"
+    state = http.get("/connections/status").json()
+
+    result = {}
+
+    def replace():
+        result["response"] = connection_action(
+            http, "start", data={"revision": state["revision"]}, follow_redirects=False
+        )
+
+    worker = threading.Thread(target=replace, daemon=True)
+    worker.start()
+    assert closing_entered.wait(timeout=5)
+
+    # While teardown of the previous window is in progress, /connections/status must not expose the replacement link,
+    # and direct access to the newly created link URL must be refused.
+    mid_status = http.get("/connections/status").json()
+    assert mid_status["state"] != "connecting"
+    assert "url" not in mid_status
+    new_links = [lnk for lnk in FLOWS[-1].relay.links("second") if lnk.url != "https://example.com/uber" + first]
+    assert len(new_links) == 1
+    new_path = new_links[0].url.removeprefix("https://example.com/uber")
+    assert http.post(f"{new_path}/start", json={"layout": "desktop"}).status_code == 404
+
+    allow_close_finish.set()
+    worker.join(timeout=5)
+    assert result["response"].status_code == 303
+    assert http.post(f"{new_path}/start", json={"layout": "desktop"}).json()["state"] == "starting"
 
 
 def test_another_owner_action_fails_promptly_while_lifecycle_cleanup_is_running(http, registry):
